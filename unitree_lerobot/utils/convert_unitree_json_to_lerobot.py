@@ -155,6 +155,32 @@ class JsonDataset:
         return images
 
 
+    def _parse_tactiles(self, episode_path, episode_data: Dict) -> dict[str, list[np.ndarray]]:
+        """Load and stack tactile data from the episode."""
+
+        tactiles = defaultdict(list)
+
+        keys = episode_data["data"][0]['tactiles'].keys()
+
+        for key in keys:
+            for sample_data in episode_data['data']:
+                relative_path = sample_data['tactiles'].get(key)
+                if not relative_path:
+                    continue
+
+                tactile_path = os.path.join(episode_path, relative_path)
+                if not os.path.exists(tactile_path):
+                    raise FileNotFoundError(f"Tactile path does not exist: {tactile_path}")
+
+                tactile_data = np.load(tactile_path)
+                if tactile_data is None:
+                    raise RuntimeError(f"Failed to load tactile data: {tactile_path}")
+
+                tactiles[key].append(tactile_data)
+
+        return tactiles
+
+
     def get_item(self, index: Optional[int] = None,) -> Dict:
         """Get a training sample from the dataset.  """
             
@@ -174,12 +200,18 @@ class JsonDataset:
         # Load camera images
         cameras = self._parse_images(file_path, episode_data)
 
-        # Extract camera configuration
+        # Load tactile data
+        tactiles = self._parse_tactiles(file_path, episode_data)
+
+        # Extract camera and tactile configuration
         cam_height, cam_width = next(img for imgs in cameras.values() if imgs for img in imgs).shape[:2]
+        tac_count = next(tac for tacs in tactiles.values() if tacs for tac in tacs).shape[0]
         data_cfg = {
             'camera_names': list(cameras.keys()),
             'cam_height': cam_height,
             'cam_width': cam_width,
+            'tactile_names': list(tactiles.keys()),
+            'tac_count': tac_count,
             'state_dim': state_dim,
             'action_dim': action_dim,
         }
@@ -189,6 +221,7 @@ class JsonDataset:
                 'state': state, 
                 'action': action,
                 'cameras': cameras,
+                'tactiles': tactiles,
                 'task': task,
                 'data_cfg':data_cfg}
 
@@ -244,12 +277,20 @@ def create_empty_dataset(
     for cam in cameras:
         features[f"observation.images.{cam}"] = {
             "dtype": mode,
-            "shape": (3, 480, 640),
+            "shape": (3, 480, 848),  # TODO: check whether hardcoded is required
             "names": [
                 "channels",
                 "height",
                 "width",
             ],
+        }
+
+    tactiles = getattr(ROBOT_CONFIGS[robot_type], "tactiles", [])
+    for tactile in tactiles:
+        features[f"observation.tactile.{tactile}"] = {
+            "dtype": "float32",
+            "shape": (1062,),  # TODO: check whether hardcoded is required
+            "names": None,
         }
 
     if Path(HF_LEROBOT_HOME / repo_id).exists():
@@ -294,6 +335,9 @@ def populate_dataset(
 
             for camera, img_array in cameras.items():
                 frame[f"observation.images.{camera}"] = img_array[i]
+
+            for tactile, tactile_array in episode["tactiles"].items():
+                frame[f"observation.tactile.{tactile}"] = tactile_array[i]
 
             dataset.add_frame(frame)
 

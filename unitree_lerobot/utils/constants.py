@@ -11,6 +11,11 @@ class RobotConfig:
     json_action_data_name: List[str]
 
 
+@dataclasses.dataclass(frozen=True)
+class TactileRobotConfig(RobotConfig):
+    tactiles: List[str]
+
+
 Z1_CONFIG = RobotConfig(
     motors=[
         "kLeftWaist",
@@ -133,7 +138,7 @@ G1_DEX3_CONFIG = RobotConfig(
 )
 
 
-G1_INSPIRE_CONFIG = RobotConfig(
+G1_INSPIRE_CONFIG = TactileRobotConfig(
     motors=[
         "kLeftShoulderPitch",
         "kLeftShoulderRoll",
@@ -164,6 +169,10 @@ G1_INSPIRE_CONFIG = RobotConfig(
     ],
     cameras=[
         "cam_left_high",
+    ],
+    tactiles=[
+        "left_tactile",
+        "right_tactile",
     ],
     camera_to_image_key = {'color_0': 'cam_left_high'},
     json_state_data_name = ['left_arm', 'right_arm', 'left_hand', 'right_hand'],
