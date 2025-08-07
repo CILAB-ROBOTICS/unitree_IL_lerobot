@@ -5,12 +5,14 @@ Script Json to Lerobot.
 # --repo-id     Your unique repo ID on Hugging Face Hub
 # --robot_type  The type of the robot used in the dataset (e.g., Unitree_G1_Dex3, Unitree_Z1_Dual, Unitree_G1_Dex3)
 # --push_to_hub Whether or not to upload the dataset to Hugging Face Hub (true or false)
+# --train_ratio Ratio of data used for the training split (rest used for test)
 
 python unitree_lerobot/utils/convert_unitree_json_to_lerobot.py \
     --raw-dir $HOME/datasets/g1_grabcube_double_hand \
     --repo-id your_name/g1_grabcube_double_hand \
-    --robot_type Unitree_G1_Dex3 \ 
-    --push_to_hub
+    --robot_type Unitree_G1_Dex3 \
+    --push_to_hub \
+    --train_ratio 0.8
 """
 import os
 import cv2
@@ -23,7 +25,7 @@ import shutil
 import numpy as np
 from pathlib import Path
 from collections import defaultdict
-from typing import Literal, List, Dict, Optional
+from typing import Literal, List, Dict, Optional, Sequence
 
 from lerobot.common.constants import HF_LEROBOT_HOME
 from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
@@ -270,12 +272,14 @@ def create_empty_dataset(
 
 def populate_dataset(
     dataset: LeRobotDataset,
-    raw_dir: Path,
-    robot_type: str,
+    json_dataset: JsonDataset,
+    episode_indices: Sequence[int],
+    *,
+    split: str,
 ) -> LeRobotDataset:
 
-    json_dataset = JsonDataset(raw_dir, robot_type)
-    for i in tqdm.tqdm(range(len(json_dataset))):
+    dataset.set_split(split)
+    for i in tqdm.tqdm(episode_indices):
         episode = json_dataset.get_item(i)
 
         state = episode["state"]
@@ -310,6 +314,8 @@ def json_to_lerobot(
     push_to_hub: bool = False,
     mode: Literal["video", "image"] = "video",
     dataset_config: DatasetConfig = DEFAULT_DATASET_CONFIG,
+    train_ratio: float = 0.8,
+    seed: int = 0,
 ):
 
     if (HF_LEROBOT_HOME / repo_id).exists():
@@ -323,11 +329,30 @@ def json_to_lerobot(
         has_velocity=False,
         dataset_config=dataset_config,
     )
+
+    json_dataset = JsonDataset(raw_dir, robot_type)
+    num_episodes = len(json_dataset)
+    indices = np.arange(num_episodes)
+    rng = np.random.default_rng(seed)
+    rng.shuffle(indices)
+    train_cutoff = int(num_episodes * train_ratio)
+    train_indices = indices[:train_cutoff]
+    test_indices = indices[train_cutoff:]
+
     dataset = populate_dataset(
         dataset,
-        raw_dir,
-        robot_type=robot_type,
+        json_dataset,
+        train_indices,
+        split="train",
     )
+
+    if len(test_indices) > 0:
+        dataset = populate_dataset(
+            dataset,
+            json_dataset,
+            test_indices,
+            split="test",
+        )
 
     if push_to_hub:
         dataset.push_to_hub(upload_large_folder = True)
