@@ -4,7 +4,12 @@ from unitree_sdk2py.core.channel import ChannelPublisher, ChannelSubscriber, Cha
 # from unitree_sdk2py.idl.default import unitree_go_msg_dds__MotorCmd_ # OLD IDL, REMOVED
 
 # NEW IMPORTS for Inspire Hand SDK
-from inspire_sdkpy import inspire_dds, inspire_hand_defaut
+try:
+    from inspire_sdkpy import inspire_dds, inspire_hand_defaut
+except ImportError:
+    print("[WARN] inspire_sdkpy not found, using mock class")
+    inspire_dds = None
+    inspire_hand_defaut = None
 
 # from teleop.robot_control.hand_retargeting import HandRetargeting, HandType # Assuming this remains the same
 import numpy as np
