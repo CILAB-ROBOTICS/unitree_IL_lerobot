@@ -24,7 +24,7 @@ from lerobot.common.envs.configs import EnvConfig
 from lerobot.common.envs.utils import env_to_policy_features
 from lerobot.common.policies.act.configuration_act import ACTConfig
 from lerobot.common.policies.diffusion.configuration_diffusion import DiffusionConfig
-from lerobot.common.policies.pi0.configuration_pi0 import PI0Config
+from cilab_unitree_lerobot.lerobot.lerobot.common.policies.pi0.configuration_pi0 import PI0Config
 from cilab_unitree_lerobot.lerobot.lerobot.common.policies.mlp.configuration_mlp import MLPConfig
 from lerobot.common.policies.pretrained import PreTrainedPolicy
 from lerobot.common.policies.tdmpc.configuration_tdmpc import TDMPCConfig
@@ -52,7 +52,7 @@ def get_policy_class(name: str) -> PreTrainedPolicy:
 
         return VQBeTPolicy
     elif name == "pi0":
-        from lerobot.common.policies.pi0.modeling_pi0 import PI0Policy
+        from cilab_unitree_lerobot.lerobot.lerobot.common.policies.pi0.modeling_pi0 import PI0Policy
 
         return PI0Policy
     elif name == "mlp":
