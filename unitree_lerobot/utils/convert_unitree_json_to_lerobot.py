@@ -397,6 +397,7 @@ def create_empty_dataset(
                 "channels",
                 "height",
                 "width",
+                "channel", # tactile carpet
             ],
         }
 
