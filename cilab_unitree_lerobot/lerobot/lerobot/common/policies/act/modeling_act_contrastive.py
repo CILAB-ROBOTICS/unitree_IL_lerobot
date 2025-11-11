@@ -157,7 +157,7 @@ class ACTPolicy(PreTrainedPolicy):
             batch["observation.images"] = [batch[key] for key in self.config.image_features]
 
         batch = self.normalize_targets(batch)
-        actions_hat, (mu_hat, log_sigma_x2_hat), contrastive_loss, self.last_contrastive_stats = self.model(batch)
+        actions_hat, (mu_hat, log_sigma_x2_hat), contrastive_loss = self.model(batch)
 
         l1_loss = (
             F.l1_loss(batch["action"], actions_hat, reduction="none") * ~batch["action_is_pad"].unsqueeze(-1)
@@ -177,18 +177,19 @@ class ACTPolicy(PreTrainedPolicy):
         else:
             loss = l1_loss
 
+        lambda_contrast = getattr(self.config, "lambda_contrast", 1.0)
         if contrastive_loss is not None:
-            cont_w = getattr(self.config, "contrastive_weight", 1.0)
-            loss = loss + cont_w * contrastive_loss
+            enc_contrastive_loss = lambda_contrast * contrastive_loss
             loss_dict["contrastive_loss"] = float(contrastive_loss.detach())
-            loss_dict["contrastive_weight"] = cont_w
+            loss_dict["lambda_contrast"] = float(lambda_contrast)
 
-        if hasattr(self, "last_contrastive_stats") and self.last_contrastive_stats is not None:
-            for k, v in self.last_contrastive_stats.items():
-                loss_dict[k] = v
+            loss_dict["enc_contrastive_loss_tensor"] = enc_contrastive_loss
+            loss_dict["has_contrastive"] = True
+        else:
+            loss_dict["contrastive_loss"] = 0.0
+            loss_dict["lambda_contrast"] = float(lambda_contrast)
+            loss_dict["has_contrastive"] = False
 
-        print(loss_dict)
-        
         return loss, loss_dict
 
 
@@ -390,6 +391,13 @@ class ACT(nn.Module):
         self.proj_tac = nn.Linear(self.config.dim_model, self.clip_dim)
 
         self.logit_scale = nn.Parameter(torch.tensor(0.0))
+
+        self.proj_third  = nn.Linear(self.config.dim_model,  self.clip_dim)
+        self.proj_carpet = nn.Linear(self.config.dim_model, self.clip_dim)
+        self.proj_vision = nn.Linear(self.config.dim_model, self.clip_dim) 
+
+        self.lambda_third_carpet = 1.0
+        self.lambda_carpet_vision = 1.0
 
         import copy
 
@@ -654,17 +662,17 @@ class ACT(nn.Module):
             tac_idx = {name: i for i, name in enumerate(tac_views)}
 
             need_third  = "cam_third" in cam_idx
-            need_carpet = "carpet_0" in tac_idx
+            need_carpet = "carpet_0" in cam_idx
 
             third = None
             if need_third:
-                third_raw = global_cam_list[cam_idx["cam_third"]]         # (B, D_third)
-                third = F.normalize(self.proj_third(third_raw), dim=-1)    # (B, clip_dim)
+                third_raw = global_cam_list[cam_idx["cam_third"]]
+                third = F.normalize(self.proj_third(third_raw), dim=-1)
 
             carpet = None
             if need_carpet:
-                carpet_raw = global_tac_list[tac_idx["carpet_0"]]          # (B, D_carpet)
-                carpet = F.normalize(self.proj_carpet(carpet_raw), dim=-1) # (B, clip_dim)
+                carpet_raw = global_cam_list[cam_idx["carpet_0"]]
+                carpet = F.normalize(self.proj_carpet(carpet_raw), dim=-1)
 
             vision = None
             vision_views = getattr(self.config, "vision_views_for_contrast", None)
@@ -739,7 +747,7 @@ class ACT(nn.Module):
             contrastive_loss = None
             self.last_contrastive_stats = None
 
-        return actions, (mu, log_sigma_x2), contrastive_loss, self.last_contrastive_stats
+        return actions, (mu, log_sigma_x2), contrastive_loss
 
 class ACTEncoder(nn.Module):
     """Convenience module for running multiple encoder layers, maybe followed by normalization."""
