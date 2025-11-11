@@ -557,7 +557,7 @@ class ACT(nn.Module):
             all_2d_features = []
             all_2d_pos_embeds = []
             
-            # contrastive learning @eunjuyummy
+            # contrastive learning global list @eunjuyummy
             global_cam_list = []
             global_tac_list = []
 
@@ -583,46 +583,31 @@ class ACT(nn.Module):
                     img_view = (img_key in self.cam_backbones and img_key in self.cam_proj_heads) # True or False
 
                     if img_view:
-                        print(f"Using per-view: {img_key}")
-                        img_features = self.cam_backbones[img_key](img)["feature_map"] # (B, C, H, W)
-                        img_features = self.encoder_img_feat_input_proj(img_features)  # (B, D, H, W)
-                        cam_pos = self.encoder_cam_feat_pos_embed(img_features).to(dtype=img_features.dtype)
-
-                        cam_seq  = einops.rearrange(img_features, "b c h w -> (h w) b c")
-                        cam_poss = einops.rearrange(cam_pos,     "b c h w -> (h w) b c")
-                        all_2d_features.append(cam_seq)
-                        all_2d_pos_embeds.append(cam_poss)
-
-                        cam_pooled = self.cam_pool(img_features).flatten(1)             # (B, D=dim_model)
-                        cam_glb    = F.normalize(self.cam_proj_heads[img_key](cam_pooled), dim=-1)  # (B, clip_dim)
-                        global_cam_list.append(cam_glb)
+                        # Process camera as 2D spatial tokens (original path)
+                        cam_features = self.cam_backbones[img_key](img)["feature_map"]
                     else:
-                        print("fail to find per-view backbone or projection head, using shared ones.")
-                        img_features = self.backbone(img)["feature_map"]                # (B, C, H, W)
-                        img_features = self.encoder_img_feat_input_proj(img_features)   # (B, D, H, W)
-                        img_pos_embed = self.encoder_cam_feat_pos_embed(img_features).to(dtype=img_features.dtype)
+                        cam_features = self.backbone(img)["feature_map"]   
 
-                        img_seq  = einops.rearrange(img_features, "b c h w -> (h w) b c")
-                        img_poss = einops.rearrange(img_pos_embed, "b c h w -> (h w) b c")
-                        all_2d_features.append(img_seq)
-                        all_2d_pos_embeds.append(img_poss)
+                    cam_features_tok = self.encoder_img_feat_input_proj(cam_features)
+                    cam_pos_embed = self.encoder_cam_feat_pos_embed(cam_features_tok).to(dtype=cam_features_tok.dtype)
 
-                        cam_pooled = self.cam_pool(img_features).flatten(1)             # (B, D=dim_model)
-                        cam_glb    = F.normalize(self.proj_cam(cam_pooled), dim=-1)     # (B, clip_dim)
-                        global_cam_list.append(cam_glb)
+                    cam_features  = einops.rearrange(cam_features_tok, "b c h w -> (h w) b c")
+                    cam_pos_embed = einops.rearrange(cam_pos_embed, "b c h w -> (h w) b c")
+                    all_2d_features.append(cam_features)
+                    all_2d_pos_embeds.append(cam_pos_embed)
+
+                    cam_pooled = self.cam_pool(cam_features_tok).flatten(1)
+
+                    if img_view:
+                        cam_glb = F.normalize(self.cam_proj_heads[img_key](cam_pooled), dim=-1)
+                    else:
+                        cam_glb    = F.normalize(self.proj_cam(cam_pooled), dim=-1)
+                    
+                    global_cam_list.append(cam_glb)
 
             if all_2d_features:
                 tokens_2d = torch.cat(all_2d_features, dim=0)  # (NPIX_total, B, D)
                 pos_embed_2d = torch.cat(all_2d_pos_embeds, dim=0)  # (NPIX_total, B, D)
-
-            # contrastive learning @eunjuyummy
-            global_cam = None
-            global_tac = None
-
-            if global_cam_list:
-                global_cam = torch.stack(global_cam_list, dim=1)  # (B, n_cam, clip_dim)
-            if global_tac_list:
-                global_tac = torch.stack(global_tac_list, dim=1)  # (B, n_tac, clip_dim)
 
         # 3) Concatenate 1D and 2D tokens/positional embeddings along sequence dimension
         if tokens_2d is not None and tokens_2d.numel() > 0:
@@ -646,51 +631,82 @@ class ACT(nn.Module):
             decoder_pos_embed=self.decoder_pos_embed.weight.unsqueeze(1),
         )
 
-        # Move back to (B, S, C).
         decoder_out = decoder_out.transpose(0, 1)
 
         actions = self.action_head(decoder_out)
 
         contrastive_loss = None
+        self.last_contrastive_stats = None
 
-        if (global_cam is not None) and (global_tac is not None):
-            cam_emb = global_cam.mean(dim=1)  # (B, clip_dim)
-            tac_emb = global_tac.mean(dim=1)  # (B, clip_dim)
+        has_cam = isinstance(global_cam_list, list) and len(global_cam_list) > 0
+        has_tac = isinstance(global_tac_list, list) and len(global_tac_list) > 0
 
-            cam_emb = F.normalize(cam_emb, dim=-1)
-            tac_emb = F.normalize(tac_emb, dim=-1)
+        if has_cam and has_tac:
+            cam_views = getattr(self.config, "cam_views", None)
+            tac_views = getattr(self.config, "tac_views", None)
 
-            logits = self.logit_scale.exp() * (cam_emb @ tac_emb.t())  # (B, B)
-            labels = torch.arange(logits.size(0), device=logits.device)
+            if not cam_views:
+                cam_views = [k.split(".")[-1] for k in self.config.image_features if "tactile" not in k]
+            if not tac_views:
+                tac_views = [k.split(".")[-1] for k in self.config.image_features if "tactile" in k]
 
-            loss_cam2tac = F.cross_entropy(logits,      labels)
-            loss_tac2cam = F.cross_entropy(logits.t(),  labels)
-            contrastive_loss = 0.5 * (loss_cam2tac + loss_tac2cam)
+            cam_idx = {name: i for i, name in enumerate(cam_views)}
+            tac_idx = {name: i for i, name in enumerate(tac_views)}
 
-            with torch.no_grad():
-                ks = [int(k) for k in getattr(self, "topk", (1, 5)) if int(k) > 0]
-                if ks:
-                    B = logits.size(0)
-                    Kmax = min(max(ks), B)
+            pairs = getattr(self.config, "contrastive_pairs", [("cam_third", "carpet_0")])
 
-                    # cam -> tac
-                    topk_idx_cam2tac = torch.topk(logits, k=Kmax, dim=1).indices  # (B, Kmax)
-                    correct_cam2tac = topk_idx_cam2tac.eq(labels.unsqueeze(1))    # (B, Kmax)
+            def _clip_nce(a, b, logit_scale):
+                # a, b: (B, clip_dim)
+                logits = logit_scale.exp() * (a @ b.t())  # (B, B)
+                labels = torch.arange(logits.size(0), device=logits.device)
+                loss_c2t = F.cross_entropy(logits,     labels)
+                loss_t2c = F.cross_entropy(logits.t(), labels)
+                return logits, 0.5 * (loss_c2t + loss_t2c)
 
-                    # tac -> cam
-                    topk_idx_tac2cam = torch.topk(logits.t(), k=Kmax, dim=1).indices
-                    correct_tac2cam = topk_idx_tac2cam.eq(labels.unsqueeze(1))
+            total_loss = 0.0
+            pair_cnt = 0
+            metrics = {}
 
-                    metrics = {}
-                    for k in ks:
-                        kk = min(k, B)
-                        acc_cam2tac = correct_cam2tac[:, :kk].any(dim=1).float().mean()
-                        acc_tac2cam = correct_tac2cam[:, :kk].any(dim=1).float().mean()
-                        metrics[f"acc_cam2tac@{k}"] = float(acc_cam2tac)
-                        metrics[f"acc_tac2cam@{k}"] = float(acc_tac2cam)
-                    metrics["logit_scale_exp"] = float(self.logit_scale.detach())
+            for cname, tname in pairs:
+                if (cname not in cam_idx) or (tname not in tac_idx):
+                    continue
 
-                    self.last_contrastive_stats = metrics
+                ci = cam_idx[cname]
+                ti = tac_idx[tname]
+                cam = F.normalize(global_cam_list[ci], dim=-1)  # (B, clip_dim)
+                tac = F.normalize(global_tac_list[ti], dim=-1)  # (B, clip_dim)
+
+                logits, loss_pair = _clip_nce(cam, tac, self.logit_scale)
+                total_loss = total_loss + loss_pair
+                pair_cnt += 1
+
+                with torch.no_grad():
+                    ks = [int(k) for k in getattr(self, "topk", (1, 5)) if int(k) > 0]
+                    if ks:
+                        B = logits.size(0)
+                        for k in ks:
+                            kk = min(k, B)
+                            # cam->tac
+                            topk_idx_c2t = torch.topk(logits, k=kk, dim=1).indices  # (B, kk)
+                            acc_c2t = topk_idx_c2t.eq(torch.arange(B, device=logits.device).unsqueeze(1)) \
+                                                .any(dim=1).float().mean()
+                            # tac->cam
+                            topk_idx_t2c = torch.topk(logits.t(), k=kk, dim=1).indices
+                            acc_t2c = topk_idx_t2c.eq(torch.arange(B, device=logits.device).unsqueeze(1)) \
+                                                .any(dim=1).float().mean()
+                            
+                            print("acc_c2t:", acc_c2t)
+                            print("acc_t2c:", acc_t2c)
+                            
+                            metrics[f"{cname}<->{tname}:acc_cam2tac@{k}"] = float(acc_c2t)
+                            metrics[f"{cname}<->{tname}:acc_tac2cam@{k}"] = float(acc_t2c)
+
+            if pair_cnt > 0:
+                contrastive_loss = total_loss / pair_cnt
+                metrics["logit_scale_exp"] = float(self.logit_scale.detach())
+                self.last_contrastive_stats = metrics
+            else:
+                contrastive_loss = None
 
         return actions, (mu, log_sigma_x2), contrastive_loss, self.last_contrastive_stats
 
