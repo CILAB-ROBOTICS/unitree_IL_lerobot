@@ -636,7 +636,8 @@ class ACT(nn.Module):
         actions = self.action_head(decoder_out)
 
         contrastive_loss = None
-        self.last_contrastive_stats = None
+        metrics = {}
+        pair_losses, pair_weights = [], []
 
         has_cam = isinstance(global_cam_list, list) and len(global_cam_list) > 0
         has_tac = isinstance(global_tac_list, list) and len(global_tac_list) > 0
@@ -644,7 +645,6 @@ class ACT(nn.Module):
         if has_cam and has_tac:
             cam_views = getattr(self.config, "cam_views", None)
             tac_views = getattr(self.config, "tac_views", None)
-
             if not cam_views:
                 cam_views = [k.split(".")[-1] for k in self.config.image_features if "tactile" not in k]
             if not tac_views:
@@ -653,60 +653,91 @@ class ACT(nn.Module):
             cam_idx = {name: i for i, name in enumerate(cam_views)}
             tac_idx = {name: i for i, name in enumerate(tac_views)}
 
-            pairs = getattr(self.config, "contrastive_pairs", [("cam_third", "carpet_0")])
+            need_third  = "cam_third" in cam_idx
+            need_carpet = "carpet_0" in tac_idx
 
-            def _clip_nce(a, b, logit_scale):
+            third = None
+            if need_third:
+                third_raw = global_cam_list[cam_idx["cam_third"]]         # (B, D_third)
+                third = F.normalize(self.proj_third(third_raw), dim=-1)    # (B, clip_dim)
+
+            carpet = None
+            if need_carpet:
+                carpet_raw = global_tac_list[tac_idx["carpet_0"]]          # (B, D_carpet)
+                carpet = F.normalize(self.proj_carpet(carpet_raw), dim=-1) # (B, clip_dim)
+
+            vision = None
+            vision_views = getattr(self.config, "vision_views_for_contrast", None)
+            if vision_views is None:
+                vision_views = [v for v in cam_views if v != "cam_third"]
+
+            vision_feats = []
+            for v in vision_views:
+                if v in cam_idx:
+                    vision_feats.append(global_cam_list[cam_idx[v]]) 
+
+            if len(vision_feats) > 0:
+                vision_raw = torch.stack(vision_feats, dim=0).mean(0)       # (B, D_view)
+                vision = F.normalize(self.proj_vision(vision_raw), dim=-1)  # (B, clip_dim)
+
+            def clip_nce(a, b, logit_scale):
                 # a, b: (B, clip_dim)
-                logits = logit_scale.exp() * (a @ b.t())  # (B, B)
+                logits = logit_scale.exp() * (a @ b.t())     # (B, B)
                 labels = torch.arange(logits.size(0), device=logits.device)
                 loss_c2t = F.cross_entropy(logits,     labels)
                 loss_t2c = F.cross_entropy(logits.t(), labels)
                 return logits, 0.5 * (loss_c2t + loss_t2c)
 
-            total_loss = 0.0
-            pair_cnt = 0
-            metrics = {}
-
-            for cname, tname in pairs:
-                if (cname not in cam_idx) or (tname not in tac_idx):
-                    continue
-
-                ci = cam_idx[cname]
-                ti = tac_idx[tname]
-                cam = F.normalize(global_cam_list[ci], dim=-1)  # (B, clip_dim)
-                tac = F.normalize(global_tac_list[ti], dim=-1)  # (B, clip_dim)
-
-                logits, loss_pair = _clip_nce(cam, tac, self.logit_scale)
-                total_loss = total_loss + loss_pair
-                pair_cnt += 1
+            if (third is not None) and (carpet is not None) and (self.lambda_third_carpet > 0):
+                logits, loss_pair = clip_nce(third, carpet, self.logit_scale)
+                pair_losses.append(loss_pair)
+                pair_weights.append(self.lambda_third_carpet)
 
                 with torch.no_grad():
                     ks = [int(k) for k in getattr(self, "topk", (1, 5)) if int(k) > 0]
                     if ks:
                         B = logits.size(0)
+                        arangeB = torch.arange(B, device=logits.device).unsqueeze(1)
                         for k in ks:
                             kk = min(k, B)
-                            # cam->tac
-                            topk_idx_c2t = torch.topk(logits, k=kk, dim=1).indices  # (B, kk)
-                            acc_c2t = topk_idx_c2t.eq(torch.arange(B, device=logits.device).unsqueeze(1)) \
-                                                .any(dim=1).float().mean()
-                            # tac->cam
-                            topk_idx_t2c = torch.topk(logits.t(), k=kk, dim=1).indices
-                            acc_t2c = topk_idx_t2c.eq(torch.arange(B, device=logits.device).unsqueeze(1)) \
-                                                .any(dim=1).float().mean()
-                            
-                            print("acc_c2t:", acc_c2t)
-                            print("acc_t2c:", acc_t2c)
-                            
-                            metrics[f"{cname}<->{tname}:acc_cam2tac@{k}"] = float(acc_c2t)
-                            metrics[f"{cname}<->{tname}:acc_tac2cam@{k}"] = float(acc_t2c)
+                            topk_c2t = torch.topk(logits, k=kk, dim=1).indices
+                            topk_t2c = torch.topk(logits.t(), k=kk, dim=1).indices
+                            acc_c2t = topk_c2t.eq(arangeB).any(dim=1).float().mean()
+                            acc_t2c = topk_t2c.eq(arangeB).any(dim=1).float().mean()
+                            metrics[f"third<->carpet:acc@{k} (cam2tac)"] = float(acc_c2t)
+                            metrics[f"third<->carpet:acc@{k} (tac2cam)"] = float(acc_t2c)
 
-            if pair_cnt > 0:
-                contrastive_loss = total_loss / pair_cnt
+            if (carpet is not None) and (vision is not None) and (self.lambda_carpet_vision > 0):
+                logits, loss_pair = clip_nce(carpet, vision, self.logit_scale)
+                pair_losses.append(loss_pair)
+                pair_weights.append(self.lambda_carpet_vision)
+
+                with torch.no_grad():
+                    ks = [int(k) for k in getattr(self, "topk", (1, 5)) if int(k) > 0]
+                    if ks:
+                        B = logits.size(0)
+                        arangeB = torch.arange(B, device=logits.device).unsqueeze(1)
+                        for k in ks:
+                            kk = min(k, B)
+                            topk_c2t = torch.topk(logits, k=kk, dim=1).indices
+                            topk_t2c = torch.topk(logits.t(), k=kk, dim=1).indices
+                            acc_c2t = topk_c2t.eq(arangeB).any(dim=1).float().mean()
+                            acc_t2c = topk_t2c.eq(arangeB).any(dim=1).float().mean()
+                            metrics[f"carpet<->vision:acc@{k} (tac2vis)"] = float(acc_c2t)
+                            metrics[f"carpet<->vision:acc@{k} (vis2tac)"] = float(acc_t2c)
+
+            if pair_losses:
+                w = torch.tensor(pair_weights, device=pair_losses[0].device, dtype=pair_losses[0].dtype)
+                loss_stack = torch.stack(pair_losses)  # (num_pairs,)
+                contrastive_loss = (loss_stack * w).sum() / (w.sum() + 1e-8)
                 metrics["logit_scale_exp"] = float(self.logit_scale.detach())
                 self.last_contrastive_stats = metrics
             else:
                 contrastive_loss = None
+                self.last_contrastive_stats = None
+        else:
+            contrastive_loss = None
+            self.last_contrastive_stats = None
 
         return actions, (mu, log_sigma_x2), contrastive_loss, self.last_contrastive_stats
 
