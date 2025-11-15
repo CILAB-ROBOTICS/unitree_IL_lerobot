@@ -62,173 +62,8 @@ import torch.nn.functional as F
 from tqdm import tqdm
 from torch.utils.data import DataLoader
 from matplotlib import pyplot as plt
-
-@parser.wrap()
-def pretrain(cfg: TrainPipelineConfig):
-
-    if cfg.wandb.enable and cfg.wandb.project:
-        wandb_logger = WandBLogger(cfg)
-    else:
-        wandb_logger = None
-        logging.info(colored("Logs will be saved locally.", "yellow", attrs=["bold"]))
-
-    if cfg.seed is not None:
-        set_seed(cfg.seed)
-
-    # Check device is available
-    device = get_safe_torch_device(cfg.policy.device, log=True)
-    torch.backends.cudnn.benchmark = True
-    torch.backends.cuda.matmul.allow_tf32 = True
-
-    logging.info("Creating dataset")
-    dataset = make_dataset(cfg)
-    #logging.info(f"Dataset info:\n{pformat(dataset.meta)}")
-
-    features = dataset.meta.features
-    camera_keys = [k for k in features if k.startswith("observation.images.") and "tactile" not in k and not k.endswith("carpet_0")]
-    tactile_keys = [k for k in features if k.startswith("observation.images.") and "tactile" in k or k.endswith("carpet_0")]
-    #cam_features = [k.split(".")[-1] for k in camera_keys]
-    #logging.info(f"Camera features: {cam_features}")
-    #tac_features = [k.split(".")[-1] for k in tactile_keys]
-    #logging.info(f"Tactile features: {tac_features}")
-
-    clip_dim: int = 512
-    features_per_group: int = 16
-    resnet_lr: float = 1e-5
-    projection_lr: float = 1e-4
-    n_epochs: int = 1000
-    n_cameras: int = len(camera_keys)
-    plot_freq: int = 50
-
-    vision_encoder = modified_resnet18(weights=None, features_per_group=features_per_group).to(device)
-    vision_projection = ClipProjectionHead(out_dim=clip_dim).to(device)
-
-    tactile_encoder = modified_resnet18(weights=None, features_per_group=features_per_group).to(device)
-    tactile_projection = ClipProjectionHead(out_dim=clip_dim).to(device)
-
-    optim_params = [{"params": tactile_encoder.parameters(), "lr": resnet_lr},
-                    {"params": tactile_projection.parameters(), "lr": projection_lr},
-                    {"params": vision_encoder.parameters(), "lr": resnet_lr},
-                    {"params": vision_projection.parameters(), "lr": projection_lr},]
-
-    print('optim_params:', optim_params)
-
-    optimizer = torch.optim.Adam(optim_params)
-    
-    training_losses = np.empty([n_epochs, n_cameras])
-    testing_losses = np.empty([n_epochs, n_cameras])
-
-    for epoch in tqdm(range(n_epochs)):
-    # train the model
-        training_loss = np.zeros(n_cameras)
-
-        tactile_encoder.train()
-        tactile_projection.train()
-        vision_encoder.train()
-        vision_projection.train()
-
-        dataloader = torch.utils.data.DataLoader(dataset)
-        
-        for batch_idx, batch in enumerate(dataloader):
-            for k, v in batch.items():
-                if isinstance(v, torch.Tensor):
-                    batch[k] = v.to(device, non_blocking=True)
-
-            camera_keys = [k for k in camera_keys if "cam_left_high" not in k]
-            cam_tensors = [batch[k] for k in camera_keys] # 1, 3, 480, 640
-            images = torch.stack(cam_tensors, dim=1) # 1, 1, 3, 480, 640 (B, N, C, H, W)
-
-            tactile_keys = [k for k in tactile_keys if "carpet_0" in k]
-            tac_tensors = [batch[k] for k in tactile_keys]  
-            tactiles = torch.stack(tac_tensors, dim=1) # 1, 1, 3, 32, 32
-
-            images = images.to(device)
-            tactiles = tactiles.to(device)
-
-            B, n_cameras, C, H, W = images.shape
-            images = images.view(-1, C, H, W)
-            image_embeddings = vision_projection(vision_encoder(images))
-            image_embeddings = image_embeddings.view(B, n_cameras, clip_dim) # 1, 1, 512
-
-            B, n_tactile, C, H, W = tactiles.shape
-            tactiles = tactiles.view(-1, C, H, W)
-            tactile_embeddings = tactile_projection(vision_encoder(tactiles))
-            tactile_embeddings = tactile_embeddings.view(B, n_tactile, clip_dim) # 1, 1, 512
-
-            batch_size = images.shape[0]
-            clip_N = 2
-
-            # calculate target matrix
-            target_matrix = torch.eye(clip_N).to(device)
-
-            if batch_idx == 0 and epoch%plot_freq == 0: # visualize the first batch in each epoch
-                loss, plot_maps = clip_loss(image_embeddings, tactile_embeddings, target_matrix, visualize=True)
-                '''
-                try:
-                    for cam_num, plot_map in enumerate(plot_maps):
-                        plt.figure()
-                        plt.imshow(plot_map)
-                        plt.colorbar()
-                        plt.title(f'Average Softmax Map, Epoch {epoch}, Cam {cam_num} - Train')
-                        plt.close()
-                except:
-                    print('Error in train plots')
-                    raise
-                '''
-            else:
-                loss, _ = clip_loss(image_embeddings, tactile_embeddings, target_matrix, visualize=False)
-
-            training_loss += loss.clone().detach().cpu().numpy()
-            optimizer.zero_grad()
-            loss.mean().backward()
-            optimizer.step()
-
-# the projection head for CLIP. I'm using resnet's approach of an average pooling layer followed by a linear layer.
-class ClipProjectionHead(nn.Module):
-    def __init__(self, out_dim: int, conditioning_dim: int = 0, num_channels:int = 512, normailize: bool = True):
-        """
-        Create a projection head for CLIP. The projection head consists of an 
-        average pooling layer followed by a linear layer.
-        out_dim: The output dimension of the linear layer.
-        conditioning_dim: The dimension of the conditioning vector. If 0, no conditioning is used.
-        num_channels: The number of channels in the feature map.
-        normailize: If true, the output of the linear layer is normalized. (default: True)
-        """
-
-        super().__init__()
-        self.pooling = nn.AdaptiveAvgPool2d((1, 1))
-        self.flatten = nn.Flatten(1, -1)
-        self.linear = nn.Linear(num_channels + conditioning_dim, out_dim)
-        self.normalize = normailize
-    
-    def forward(self, feature_map, conditioning=None) -> torch.Tensor:
-        x = self.pooling(feature_map)
-        x = self.flatten(x)
-        if conditioning is not None:
-            x = torch.cat((x, conditioning), dim=-1)
-
-        x = self.linear(x)
-
-        if self.normalize:
-            x = F.normalize(x, dim=-1)
-
-        return x
-
-def modified_resnet18(weights=None, features_per_group=16) -> nn.Module:
-    """
-    Get a resnet18 model with all BatchNorm layers replaced with GroupNorm.
-    weights: The weights to load into the model. If None, uses default pretraiend weights.
-    features_per_group: The number of features per group in the GroupNorm layer.
-    return: The modified resnet18 model."""
-    # get a resnet18 model
-    resnet18 = getattr(torchvision.models, 'resnet18')()
-
-    # remove the final fully connected layer and average pooling
-    resnet18 = nn.Sequential(*list(resnet18.children())[:-2])
-
-    # replace all BatchNorm with GroupNorm
-    resnet18 = replace_bn_with_gn(resnet18, features_per_group=features_per_group)
-    return resnet18   
+from utils import get_norm_stats
+from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
 
 def replace_submodules(
         root_module: nn.Module,
@@ -282,11 +117,409 @@ def replace_bn_with_gn(
     )
     return root_module
 
+# the projection head for CLIP. I'm using resnet's approach of an average pooling layer followed by a linear layer.
+class ClipProjectionHead(nn.Module):
+    def __init__(self, out_dim: int, conditioning_dim: int = 0, num_channels:int = 512, normailize: bool = True):
+        """
+        Create a projection head for CLIP. The projection head consists of an 
+        average pooling layer followed by a linear layer.
+        out_dim: The output dimension of the linear layer.
+        conditioning_dim: The dimension of the conditioning vector. If 0, no conditioning is used.
+        num_channels: The number of channels in the feature map.
+        normailize: If true, the output of the linear layer is normalized. (default: True)
+        """
+
+        super().__init__()
+        self.pooling = nn.AdaptiveAvgPool2d((1, 1))
+        self.flatten = nn.Flatten(1, -1)
+        self.linear = nn.Linear(num_channels + conditioning_dim, out_dim)
+        self.normalize = normailize
+    
+    def forward(self, feature_map, conditioning=None) -> torch.Tensor:
+        x = self.pooling(feature_map)
+        x = self.flatten(x)
+        if conditioning is not None:
+            x = torch.cat((x, conditioning), dim=-1)
+
+        x = self.linear(x)
+
+        if self.normalize:
+            x = F.normalize(x, dim=-1)
+
+        return x
+
+def modified_resnet18(weights=None, features_per_group=16) -> nn.Module:
+    """
+    Get a resnet18 model with all BatchNorm layers replaced with GroupNorm.
+    weights: The weights to load into the model. If None, uses default pretraiend weights.
+    features_per_group: The number of features per group in the GroupNorm layer.
+    return: The modified resnet18 model."""
+    # get a resnet18 model
+    resnet18 = getattr(torchvision.models, 'resnet18')()
+
+    # remove the final fully connected layer and average pooling
+    resnet18 = nn.Sequential(*list(resnet18.children())[:-2])
+
+    # replace all BatchNorm with GroupNorm
+    resnet18 = replace_bn_with_gn(resnet18, features_per_group=features_per_group)
+    return resnet18   
+
+class ClipDataset(torch.utils.data.Dataset):
+    def __init__(self, 
+                 episode_ids: List[int], 
+                 dataset_dir: str, 
+                 camera_names: List[str], 
+                 norm_stats: Dict[str, Union[float, np.ndarray]],
+                 image_size: Tuple[int, int] = None, 
+                 tactile_size: Tuple[int, int] = None,
+                 min_distance = 5,
+                 n_images = 10,
+                 is_cluster=False):
+        
+        if is_cluster:
+            # pre-load all the data into memory
+            self.episodes = {}
+            for episode_id in self.episode_ids:
+                dataset_path = os.path.join(self.dataset_dir, f'episode_{episode_id}.hdf5')
+                with h5py.File(dataset_path, 'r') as root:
+                    all_cam_images = []
+                    all_gelsight_images = []
+                    all_positions = []
+                    for timestep in range(self.episode_lengths[episode_id]):
+                        # get camera images
+                        timestep_cam_images = []
+
+                        for cam_name in self.camera_names:
+                            image = root[f'/observations/images/{cam_name}'][timestep]
+                            
+                            # convert to tensor
+                            image = torch.tensor(image, dtype=torch.float32)/255.0
+                            image = torch.einsum('h w c -> c h w', image)
+
+                            # normalize image
+                            image = self.image_normalize(image)
+                            timestep_cam_images.append(image)
+
+                        images = torch.stack(timestep_cam_images, axis=0)
+
+                        # get gelsight data
+                        gelsight_data = root['observations/gelsight/depth_strain_image'][timestep]
+
+                        # resize gelsight data
+                        if self.gelsight_size != gelsight_data.shape[:2]:
+                            raise ValueError("Image size must be the same for all cameras")
+                            gelsight_data = cv2.resize(gelsight_data, (self.gelsight_size[1], self.gelsight_size[0]))
+                        
+                        # convert to tensor
+                        gelsight_data = torch.tensor(gelsight_data, dtype=torch.float32)
+                        gelsight_data = torch.einsum('h w c -> c h w', gelsight_data) # change to c h w
+
+                        # normalize gelsight data
+                        gelsight_data = self.gelsight_normalize(gelsight_data)
+
+                        # get qpos and normalize
+                        position = root['observations/qpos'][timestep]
+                        position = (position - self.position_mean) / self.position_std
+
+                        # don't include the last element, which is the gripper
+                        position = torch.tensor(position[:3], dtype=torch.float32)
+
+                        all_cam_images.append(images)
+                        all_gelsight_images.append(gelsight_data)
+                        all_positions.append(position)
+                    
+                self.episodes[episode_id] = (torch.stack(all_cam_images, axis=0), torch.stack(all_gelsight_images, axis=0), torch.stack(all_positions, axis=0))
+
+def clip_pretraining(train_dataset,
+                     test_dataset,
+                     device: torch.device,
+                     save_dir: str,
+                     save_freq: int = 100,
+                     plot_freq: int = 50,
+                     n_epochs: int = 10,
+                     clip_dim: int = 512,
+                     features_per_group: int = 16,
+                     resnet_lr: float = 1e-5,
+                     projection_lr: float = 1e-4):
+
+    import matplotlib
+    matplotlib.use('Agg')
+    from matplotlib import pyplot as plt
+    
+    if save_dir[-1] == '/':
+        save_dir = save_dir[:-1]
+
+    # get the camera, gelsight, and state dimensions from the dataset
+    features = train_dataset.meta.features
+    camera_keys = [k for k in features if k.startswith("observation.images.") and "tactile" not in k and not k.endswith("carpet_0")]
+    tactile_keys = [k for k in features if k.startswith("observation.images.") and "tactile" in k or k.endswith("carpet_0")]
+    n_cameras = 1 #len(camera_keys)
+
+    #camera_sizes = [dataset.image_size]*n_cameras
+    #gelsight_size = dataset.gelsight_size
+    state_size = 3
+    
+    # get resnet models for each camera
+    vision_encoder = modified_resnet18(weights=None, features_per_group=features_per_group).to(device)
+    # create a projection head
+    vision_projection = ClipProjectionHead(out_dim=clip_dim).to(device)
+
+    # get resnet models for each tactile
+    tactile_encoder = modified_resnet18(weights=None, features_per_group=features_per_group).to(device)
+    # create a projection head
+    tactile_projection = ClipProjectionHead(out_dim=clip_dim).to(device)
+
+    optim_params = [{"params": tactile_encoder.parameters(), "lr": resnet_lr},
+                    {"params": tactile_projection.parameters(), "lr": projection_lr},
+                    {"params": vision_encoder.parameters(), "lr": resnet_lr},
+                    {"params": vision_projection.parameters(), "lr": projection_lr},]
+
+    print('optim_params:', optim_params)
+
+    optimizer = torch.optim.Adam(optim_params)
+    
+    training_losses = np.empty([n_epochs, n_cameras])
+    testing_losses = np.empty([n_epochs, n_cameras])
+
+    for epoch in tqdm(range(n_epochs)):
+    # train the model
+        training_loss = np.zeros(n_cameras)
+
+        tactile_encoder.train()
+        tactile_projection.train()
+        vision_encoder.train()
+        vision_projection.train()
+
+        train_loader = DataLoader(train_dataset, batch_size=512, shuffle=True)
+
+        for batch_idx, batch in enumerate(train_loader):
+            for k, v in batch.items():
+                #print('Batch key:', k, 'Value shape/type:', v.shape if isinstance(v, torch.Tensor) else type(v))
+                if isinstance(v, torch.Tensor):
+                    batch[k] = v.to(device, non_blocking=True)
+
+            camera_keys = [k for k in camera_keys if "cam_left_high" not in k]
+            cam_tensors = [batch[k] for k in camera_keys] # n_cameras, C, H, W
+            images = torch.stack(cam_tensors, dim=1) # B, N, C, H, W
+            print(images.shape)
+
+            tactile_keys = [k for k in tactile_keys if "carpet_0" in k]
+            tac_tensors = [batch[k] for k in tactile_keys]  
+            tactiles = torch.stack(tac_tensors, dim=1) # 1, 1, 3, 32, 32
+            print(tactiles.shaepe)
+
+            images = images.to(device)
+            tactiles = tactiles.to(device)
+
+            B, n_cameras, C, H, W = images.shape
+            images = images.view(-1, C, H, W)
+            image_embeddings = vision_projection(vision_encoder(images))
+            image_embeddings = image_embeddings.view(B, n_cameras, clip_dim) # 1, 1, 512
+
+            B, n_tactile, C, H, W = tactiles.shape
+            tactiles = tactiles.view(-1, C, H, W)
+            tactile_embeddings = tactile_projection(vision_encoder(tactiles))
+            tactile_embeddings = tactile_embeddings.view(B, n_tactile, clip_dim) # 1, 1, 512
+
+            batch_size = images.shape[0]
+            clip_N = 2
+
+            # calculate target matrix
+            target_matrix = torch.eye(clip_N).to(device)
+
+            if batch_idx == 0 and epoch%plot_freq == 0: # visualize the first batch in each epoch
+                loss, plot_maps = clip_loss(image_embeddings, tactile_embeddings, target_matrix, visualize=True)
+
+                try:
+                    for cam_num, plot_map in enumerate(plot_maps):
+                        plt.figure()
+                        plt.imshow(plot_map)
+                        plt.colorbar()
+                        plt.title(f'Average Softmax Map, Epoch {epoch}, Cam {cam_num} - Train')
+                        plt.close()
+                except:
+                    print('Error in train plots')
+                    raise
+
+            else:
+                loss, _ = clip_loss(image_embeddings, tactile_embeddings, target_matrix, visualize=False)
+
+            training_loss += loss.clone().detach().cpu().numpy()
+            optimizer.zero_grad()
+            loss.mean().backward()
+            optimizer.step()
+
+def run_clip_pretraining():
+    save_dir = "data/clip_models/"
+    os.makedirs(save_dir, exist_ok=True)
+
+    train_dataset_id = "eunjuri/towel_strong_train_full"
+    test_dataset_id = "eunjuri/towel_strong_test_full"
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    batch_size_train = 3
+    batch_size_test = 3
+
+    train_dataset = LeRobotDataset(repo_id=train_dataset_id)
+    test_dataset  = LeRobotDataset(repo_id=test_dataset_id)
+
+    # create directory to save models and plots
+    # get all folders in the clip_models directory
+    ns = [-1]
+    for folder in os.listdir(save_dir):
+        ns.append(int(folder))
+
+    n = max(ns) + 1
+    os.makedirs(f'{save_dir}/{n}')
+    os.makedirs(f'{save_dir}/{n}/graphs')
+
+    # save run stats:
+    with open(f'{save_dir}/{n}/run_stats.txt', 'w') as f:
+        f.write(f'train_dataset: {train_dataset}\n')
+        f.write(f'test_dataset: {test_dataset}\n')
+
+    clip_pretraining(train_dataset, test_dataset, device, save_dir=f'{save_dir}/{n}', clip_dim=512, features_per_group=16, n_epochs=1501)
+
+'''
+@parser.wrap()
+def clip_pretraining(cfg: TrainPipelineConfig):
+
+    if cfg.wandb.enable and cfg.wandb.project:
+        wandb_logger = WandBLogger(cfg)
+    else:
+        wandb_logger = None
+        logging.info(colored("Logs will be saved locally.", "yellow", attrs=["bold"]))
+
+    if cfg.seed is not None:
+        set_seed(cfg.seed)
+
+    # Check device is available
+    device = get_safe_torch_device(cfg.policy.device, log=True)
+    torch.backends.cudnn.benchmark = True
+    torch.backends.cuda.matmul.allow_tf32 = True
+
+    logging.info("Creating dataset")
+    dataset = make_dataset(cfg)
+    #logging.info(f"Dataset info:\n{pformat(dataset.meta)}")
+
+    features = dataset.meta.features
+    camera_keys = [k for k in features if k.startswith("observation.images.") and "tactile" not in k and not k.endswith("carpet_0")]
+    tactile_keys = [k for k in features if k.startswith("observation.images.") and "tactile" in k or k.endswith("carpet_0")]
+
+    clip_dim: int = 512
+    features_per_group: int = 16
+    resnet_lr: float = 1e-5
+    projection_lr: float = 1e-4
+    n_epochs: int = 1000
+    n_cameras: int = len(camera_keys)
+    plot_freq: int = 50
+
+    # get resnet models for each camera
+    vision_encoder = modified_resnet18(weights=None, features_per_group=features_per_group).to(device)
+    # create a projection head
+    vision_projection = ClipProjectionHead(out_dim=clip_dim).to(device)
+
+    # get resnet models for each tactile
+    tactile_encoder = modified_resnet18(weights=None, features_per_group=features_per_group).to(device)
+    # create a projection head
+    tactile_projection = ClipProjectionHead(out_dim=clip_dim).to(device)
+
+    optim_params = [{"params": tactile_encoder.parameters(), "lr": resnet_lr},
+                    {"params": tactile_projection.parameters(), "lr": projection_lr},
+                    {"params": vision_encoder.parameters(), "lr": resnet_lr},
+                    {"params": vision_projection.parameters(), "lr": projection_lr},]
+
+    print('optim_params:', optim_params)
+
+    optimizer = torch.optim.Adam(optim_params)
+    
+    training_losses = np.empty([n_epochs, n_cameras])
+    testing_losses = np.empty([n_epochs, n_cameras])
+
+    shuffle = True
+    sampler = None
+
+    dataloader = torch.utils.data.DataLoader(
+        dataset,
+        num_workers=cfg.num_workers,
+        batch_size=cfg.batch_size,
+        shuffle=shuffle,
+        sampler=sampler,
+        pin_memory=device.type != "cpu",
+        drop_last=False,
+    )
+
+    print(dataset.num_episodes)
+
+    for epoch in tqdm(range(n_epochs)):
+    # train the model
+        training_loss = np.zeros(n_cameras)
+
+        tactile_encoder.train()
+        tactile_projection.train()
+        vision_encoder.train()
+        vision_projection.train(
+        )
+
+        for batch_idx, batch in enumerate(dataloader):
+            print('Batch idx:', batch_idx)
+            print('Batch keys:', batch.keys())
+
+            for k, v in batch.items():
+                if isinstance(v, torch.Tensor):
+                    batch[k] = v.to(device, non_blocking=True)
+
+            camera_keys = [k for k in camera_keys if "cam_left_high" not in k]
+            cam_tensors = [batch[k] for k in camera_keys] # 1, 3, 480, 640
+            images = torch.stack(cam_tensors, dim=1) # 1, 1, 3, 480, 640 (B, N, C, H, W)
+
+            tactile_keys = [k for k in tactile_keys if "carpet_0" in k]
+            tac_tensors = [batch[k] for k in tactile_keys]  
+            tactiles = torch.stack(tac_tensors, dim=1) # 1, 1, 3, 32, 32
+
+            images = images.to(device)
+            tactiles = tactiles.to(device)
+
+            B, n_cameras, C, H, W = images.shape
+            images = images.view(-1, C, H, W)
+            image_embeddings = vision_projection(vision_encoder(images))
+            image_embeddings = image_embeddings.view(B, n_cameras, clip_dim) # 1, 1, 512
+
+            B, n_tactile, C, H, W = tactiles.shape
+            tactiles = tactiles.view(-1, C, H, W)
+            tactile_embeddings = tactile_projection(vision_encoder(tactiles))
+            tactile_embeddings = tactile_embeddings.view(B, n_tactile, clip_dim) # 1, 1, 512
+
+            batch_size = images.shape[0]
+            clip_N = 2
+
+            # calculate target matrix
+            target_matrix = torch.eye(clip_N).to(device)
+
+            if batch_idx == 0 and epoch%plot_freq == 0: # visualize the first batch in each epoch
+                loss, plot_maps = clip_loss(image_embeddings, tactile_embeddings, target_matrix, visualize=True)
+
+                try:
+                    for cam_num, plot_map in enumerate(plot_maps):
+                        plt.figure()
+                        plt.imshow(plot_map)
+                        plt.colorbar()
+                        plt.title(f'Average Softmax Map, Epoch {epoch}, Cam {cam_num} - Train')
+                        plt.close()
+                except:
+                    print('Error in train plots')
+                    raise
+
+            else:
+                loss, _ = clip_loss(image_embeddings, tactile_embeddings, target_matrix, visualize=False)
+
+            training_loss += loss.clone().detach().cpu().numpy()
+            optimizer.zero_grad()
+            loss.mean().backward()
+            optimizer.step()
+'''
 
 def clip_loss(image_embeddings:torch.Tensor, tactile_embeddings:torch.Tensor, target_matrix:torch.Tensor, logit_scale = 1.0, visualize = False):
-    # image_embeddings: batch, clip_N, camera, clip_dim
-    # gelsight_embeddings: batch, clip_N, clip_dim
-    # same as clip_loss, but vectorized
     n_cameras = image_embeddings.shape[1]
     batch_size = image_embeddings.shape[0]
 
@@ -316,91 +549,8 @@ def clip_loss(image_embeddings:torch.Tensor, tactile_embeddings:torch.Tensor, ta
 
     return loss, visualizations
 
-    '''
-    logging.info(colored("Output dir:", "yellow", attrs=["bold"]) + f" {cfg.output_dir}")
-    if cfg.env is not None:
-        logging.info(f"{cfg.env.task=}")
-    logging.info(f"{cfg.steps=} ({format_big_number(cfg.steps)})")
-    logging.info(f"{dataset.num_frames=} ({format_big_number(dataset.num_frames)})")
-    logging.info(f"{dataset.num_episodes=}")
-    logging.info(f"{num_learnable_params=} ({format_big_number(num_learnable_params)})")
-    logging.info(f"{num_total_params=} ({format_big_number(num_total_params)})")
-
-    # create dataloader for offline training
-    if hasattr(cfg.policy, "drop_n_last_frames"):
-        shuffle = False
-        sampler = EpisodeAwareSampler(
-            dataset.episode_data_index,
-            drop_n_last_frames=cfg.policy.drop_n_last_frames,
-            shuffle=True,
-        )
-    else:
-        shuffle = True
-        sampler = None
-
-    dataloader = torch.utils.data.DataLoader(
-        dataset,
-        num_workers=cfg.num_workers,
-        batch_size=cfg.batch_size,
-        shuffle=shuffle,
-        sampler=sampler,
-        pin_memory=device.type != "cpu",
-        drop_last=False,
-    )
-    dl_iter = cycle(dataloader)
-
-    policy.train()
-
-    train_metrics = {
-        "loss": AverageMeter("loss", ":.3f"),
-        "grad_norm": AverageMeter("grdn", ":.3f"),
-        "lr": AverageMeter("lr", ":0.1e"),
-        "update_s": AverageMeter("updt_s", ":.3f"),
-        "dataloading_s": AverageMeter("data_s", ":.3f"),
-    }
-
-    train_tracker = MetricsTracker(
-        cfg.batch_size, dataset.num_frames, dataset.num_episodes, train_metrics, initial_step=step
-    )
-
-    logging.info("Start offline training on a fixed dataset")
-    for _ in range(step, cfg.steps):
-        start_time = time.perf_counter()
-        batch = next(dl_iter)
-        train_tracker.dataloading_s = time.perf_counter() - start_time
-
-        for key in batch:
-            if isinstance(batch[key], torch.Tensor):
-                batch[key] = batch[key].to(device, non_blocking=True)
-
-
-        # Note: eval and checkpoint happens *after* the `step`th training update has completed, so we
-        # increment `step` here.
-        step += 1
-        train_tracker.step()
-        is_log_step = cfg.log_freq > 0 and step % cfg.log_freq == 0
-        is_saving_step = step % cfg.save_freq == 0 or step == cfg.steps
-        is_eval_step = cfg.eval_freq > 0 and step % cfg.eval_freq == 0
-
-        if is_log_step:
-            logging.info(train_tracker)
-            if wandb_logger:
-                wandb_log_dict = train_tracker.to_dict()
-                if output_dict:
-                    wandb_log_dict.update(output_dict)
-                wandb_logger.log_dict(wandb_log_dict, step)
-            train_tracker.reset_averages()
-
-        if cfg.save_checkpoint and is_saving_step:
-            logging.info(f"Checkpoint policy after step {step}")
-            checkpoint_dir = get_step_checkpoint_dir(cfg.output_dir, cfg.steps, step)
-            save_checkpoint(checkpoint_dir, step, cfg, policy, optimizer, lr_scheduler)
-            update_last_checkpoint(checkpoint_dir)
-            if wandb_logger:
-                wandb_logger.log_policy(checkpoint_dir)
-    '''
     
 if __name__ == "__main__":
     init_logging()
-    pretrain()
+    run_clip_pretraining()
     logging.info("All done!")
