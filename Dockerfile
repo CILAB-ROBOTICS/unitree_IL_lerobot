@@ -8,24 +8,56 @@ RUN apt-get update && apt-get install -y \
     screen \
     tmux \
     gnupg \
+    python3 \
+    python3-pip \
     && apt-get clean
+
+RUN ln -sf /usr/bin/python3 /usr/bin/python
+
+RUN apt-get remove -y python3-blinker || true
 
 WORKDIR /workspace
 COPY . .
 
-# LeRobot
-RUN cd unitree_lerobot/lerobot && pip install -e .
+RUN pip install --upgrade pip && \
+    pip install --no-cache-dir "blinker>=1.7"
 
-# unitree_lerobot
-RUN cd unitree_lerobot && pip install -e .
+RUN pip install --upgrade pip && \
+    pip install --no-cache-dir \
+        torch \
+        torchvision \
+        pyyaml \
+        pexpect \
+        opencv-python \
+        matplotlib \
+        einops \
+        packaging \
+        h5py \
+        ipython \
+        tqdm
 
-# Unitree SDK2 Python
+RUN apt-get update && apt-get install -y \
+    libgl1 \
+    libglib2.0-0 \
+    libsm6 \
+    libxext6 \
+    libxrender1
+
+
+RUN apt-get update && apt-get install -y ffmpeg libsm6 libxext6
+
+RUN pip uninstall -y torchcodec
+
+RUN pip install torchcodec==0.2.0
+
+RUN cd /workspace/unitree_lerobot/lerobot && \
+    pip install -e .
+
+RUN cd /workspace && \
+    pip install -e .
+
 RUN git clone https://github.com/unitreerobotics/unitree_sdk2_python.git && \
     cd unitree_sdk2_python && \
     pip install -e .
-
-RUN apt-get install -y python3-pip
-RUN pip install --upgrade pip
-RUN pip install -e .
 
 CMD ["bash"]
