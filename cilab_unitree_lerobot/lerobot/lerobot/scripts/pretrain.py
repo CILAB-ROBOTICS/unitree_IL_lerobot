@@ -67,6 +67,7 @@ from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
 import matplotlib
 matplotlib.use('Agg')
 from matplotlib import pyplot as plt
+import wandb
 
 def replace_submodules(
         root_module: nn.Module,
@@ -433,9 +434,16 @@ def clip_pretraining(train_dataset,
                 test_loss += loss.clone().detach().cpu().numpy()
         testing_losses[epoch] = test_loss/len(test_loader)
 
+        # Log metrics to W&B
+        wandb.log({
+            "train/loss": training_losses[epoch].mean(),
+            "test/loss": testing_losses[epoch].mean(),
+            "epoch": epoch
+        })
+
         # plot the training and testing losses
-        if epoch%plot_freq == 0:
-            plt.figure()
+        if epoch % plot_freq == 0:
+            plt.figure(figsize=(10, 6))
             for i in range(n_cameras):
                 plt.plot(training_losses[:epoch+1, i], label=f'camera {i+1} train', c=f'C{i}')
                 plt.plot(testing_losses[:epoch+1, i], label=f'camera {i+1} test', linestyle='dashed', c=f'C{i}')
@@ -444,6 +452,9 @@ def clip_pretraining(train_dataset,
             plt.xlabel('Epoch')
             plt.ylabel('Loss')
             plt.savefig(f'{save_dir}/graphs/training_loss.png')
+            
+            # Log plot to W&B
+            wandb.log({"training_loss_plot": wandb.Image(f'{save_dir}/graphs/training_loss.png')})
             plt.close()
 
         # save the losses as a np file
@@ -458,6 +469,21 @@ def clip_pretraining(train_dataset,
             torch.save(tactile_projection.state_dict(), f'{save_dir}/epoch_{epoch}_tactile_projection.pth')
 
 def run_clip_pretraining():
+    wandb.init(
+        project="clip-pretraining",
+        name=None,
+        config={
+            "n_epochs": 100,
+            "batch_size": 4,
+            "clip_dim": 512,
+            "features_per_group": 16,
+            "resnet_lr": 1e-5,
+            "projection_lr": 1e-4,
+            "plot_freq": 10,
+            "save_freq": 100,
+        }
+    )
+
     start_time = time.time()
     save_dir = "data/clip_models/"
     os.makedirs(save_dir, exist_ok=True)
@@ -486,6 +512,8 @@ def run_clip_pretraining():
         f.write(f'train_dataset: {train_dataset}\n')
         f.write(f'test_dataset: {test_dataset}\n')
 
+    wandb.config.update({"save_dir": f'{save_dir}/{n}'})
+
     clip_pretraining(train_dataset, test_dataset, device, save_dir=f'{save_dir}/{n}', clip_dim=512, features_per_group=16, n_epochs=100)
     
     elapsed_time = time.time() - start_time
@@ -495,6 +523,14 @@ def run_clip_pretraining():
     logging.info("CLIP pretraining completed successfully!")
     logging.info(f"Models saved to: {save_dir}/{n}/")
     logging.info(f"Total training time: {minutes}m {seconds}s")
+
+    wandb.log({
+        "total_training_time_minutes": minutes,
+        "total_training_time_seconds": seconds,
+        "save_directory": f'{save_dir}/{n}'
+    })
+
+    wandb.finish()
 
 if __name__ == "__main__":
     init_logging()
