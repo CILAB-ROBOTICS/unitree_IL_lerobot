@@ -62,7 +62,6 @@ import torch.nn.functional as F
 from tqdm import tqdm
 from torch.utils.data import DataLoader
 from matplotlib import pyplot as plt
-from utils import get_norm_stats
 from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
 
 def replace_submodules(
@@ -290,7 +289,8 @@ def clip_pretraining(train_dataset,
         vision_encoder.train()
         vision_projection.train()
 
-        train_loader = DataLoader(train_dataset, batch_size=512, shuffle=True)
+        train_loader = DataLoader(train_dataset, batch_size=4, shuffle=True)
+        test_loader = DataLoader(test_dataset, batch_size=4, shuffle=True)
 
         for batch_idx, batch in enumerate(train_loader):
             for k, v in batch.items():
@@ -301,12 +301,10 @@ def clip_pretraining(train_dataset,
             camera_keys = [k for k in camera_keys if "cam_left_high" not in k]
             cam_tensors = [batch[k] for k in camera_keys] # n_cameras, C, H, W
             images = torch.stack(cam_tensors, dim=1) # B, N, C, H, W
-            print(images.shape)
 
             tactile_keys = [k for k in tactile_keys if "carpet_0" in k]
             tac_tensors = [batch[k] for k in tactile_keys]  
             tactiles = torch.stack(tac_tensors, dim=1) # 1, 1, 3, 32, 32
-            print(tactiles.shaepe)
 
             images = images.to(device)
             tactiles = tactiles.to(device)
@@ -321,7 +319,7 @@ def clip_pretraining(train_dataset,
             tactile_embeddings = tactile_projection(vision_encoder(tactiles))
             tactile_embeddings = tactile_embeddings.view(B, n_tactile, clip_dim) # 1, 1, 512
 
-            batch_size = images.shape[0]
+            batch_size = 4
             clip_N = 2
 
             # calculate target matrix
@@ -329,7 +327,7 @@ def clip_pretraining(train_dataset,
 
             if batch_idx == 0 and epoch%plot_freq == 0: # visualize the first batch in each epoch
                 loss, plot_maps = clip_loss(image_embeddings, tactile_embeddings, target_matrix, visualize=True)
-
+                '''
                 try:
                     for cam_num, plot_map in enumerate(plot_maps):
                         plt.figure()
@@ -340,7 +338,7 @@ def clip_pretraining(train_dataset,
                 except:
                     print('Error in train plots')
                     raise
-
+                '''
             else:
                 loss, _ = clip_loss(image_embeddings, tactile_embeddings, target_matrix, visualize=False)
 
@@ -348,6 +346,113 @@ def clip_pretraining(train_dataset,
             optimizer.zero_grad()
             loss.mean().backward()
             optimizer.step()
+            print(f'Epoch {epoch} Batch {batch_idx} Train Loss: {loss.mean().item():.4f}')
+
+        training_losses[epoch] = training_loss/len(train_loader)
+
+        # test the model
+        tactile_encoder.eval()
+        tactile_projection.eval()
+        vision_encoder.eval()
+        vision_projection.eval()
+
+        test_loss = np.zeros(n_cameras)
+        with torch.no_grad():
+            for batch_idx, batch in enumerate(test_loader):
+                for k, v in batch.items():
+                    if isinstance(v, torch.Tensor):
+                        batch[k] = v.to(device, non_blocking=True)
+
+                # forward pass
+                batch_size = 4
+                clip_N = 2
+
+                camera_keys = [k for k in camera_keys if "cam_left_high" not in k]
+                cam_tensors = [batch[k] for k in camera_keys] # n_cameras, C, H, W
+                images = torch.stack(cam_tensors, dim=1) # B, N, C, H, W
+
+                tactile_keys = [k for k in tactile_keys if "carpet_0" in k]
+                tac_tensors = [batch[k] for k in tactile_keys]  
+                tactiles = torch.stack(tac_tensors, dim=1) # 1, 1, 3, 32, 32
+
+                images = images.to(device)
+                tactiles = tactiles.to(device)
+
+                B, n_cameras, C, H, W = images.shape
+                images = images.view(-1, C, H, W)
+                image_embeddings = vision_projection(vision_encoder(images))
+                image_embeddings = image_embeddings.view(B, n_cameras, clip_dim) # 1, 1, 512
+
+                B, n_tactile, C, H, W = tactiles.shape
+                tactiles = tactiles.view(-1, C, H, W)
+                tactile_embeddings = tactile_projection(vision_encoder(tactiles))
+                tactile_embeddings = tactile_embeddings.view(B, n_tactile, clip_dim) # 1, 1, 512
+
+                # calculate target matrix
+                target_matrix = torch.eye(clip_N).to(device)
+
+                # calculate loss - vector of per-camera losses
+                            # calculate loss - vector of per-camera losses
+                if batch_idx == 0 and epoch%plot_freq == 0: # visualize the first batch in each epoch
+                    loss, plot_maps = clip_loss(image_embeddings, tactile_embeddings, target_matrix, visualize=True)
+                    '''
+                    try:
+                        for cam_num, plot_map in enumerate(plot_maps):
+                            plt.figure()
+                            plt.imshow(plot_map)
+                            plt.colorbar()
+                            plt.title(f'Average Softmax Map, Epoch {epoch}, Cam {cam_num} - Test')
+                            plt.savefig(f'{save_dir}/graphs/epoch_{epoch}_cam_{cam_num}_test.png')
+                            plt.close()
+                    except:
+                        print('Error in test plots')
+                        raise
+                    '''
+
+                else:
+                    loss, _ = clip_loss(image_embeddings, tactile_embeddings, target_matrix, visualize=True)
+                test_loss += loss.clone().detach().cpu().numpy()
+                print(f'Epoch {epoch} Batch {batch_idx} Test Loss: {loss.mean().item():.4f}')
+        testing_losses[epoch] = test_loss/len(test_loader)
+
+        # plot the training and testing losses
+        if epoch%plot_freq == 0:
+            plt.figure()
+            for i in range(n_cameras):
+                plt.plot(training_losses[:epoch+1, i], label=f'camera {i+1} train', c=f'C{i}')
+                plt.plot(testing_losses[:epoch+1, i], label=f'camera {i+1} test', linestyle='dashed', c=f'C{i}')
+            plt.legend(loc='best')
+            plt.title(f'Training and Testing Loss - Epoch {epoch+1}/{n_epochs}')
+            plt.xlabel('Epoch')
+            plt.ylabel('Loss')
+            plt.savefig(f'{save_dir}/graphs/training_loss.png')
+            plt.close()
+
+        # save the losses as a np file
+        np.save(f'{save_dir}/graphs/training_losses.npy', training_losses)
+        np.save(f'{save_dir}/graphs/testing_losses.npy', testing_losses)
+
+        # save the models
+        if (epoch+1) % save_freq == 0:
+            torch.save(vision_encoder.state_dict(), f'{save_dir}/epoch_{epoch}_vision_encoder.pth')
+            torch.save(vision_projection.state_dict(), f'{save_dir}/epoch_{epoch}_vision_projection.pth')
+            torch.save(tactile_encoder.state_dict(), f'{save_dir}/epoch_{epoch}_tactile_encoder.pth')
+            torch.save(tactile_projection.state_dict(), f'{save_dir}/epoch_{epoch}_tactile_projection.pth')
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 def run_clip_pretraining():
     save_dir = "data/clip_models/"
@@ -380,148 +485,9 @@ def run_clip_pretraining():
 
     clip_pretraining(train_dataset, test_dataset, device, save_dir=f'{save_dir}/{n}', clip_dim=512, features_per_group=16, n_epochs=1501)
 
-'''
-@parser.wrap()
-def clip_pretraining(cfg: TrainPipelineConfig):
-
-    if cfg.wandb.enable and cfg.wandb.project:
-        wandb_logger = WandBLogger(cfg)
-    else:
-        wandb_logger = None
-        logging.info(colored("Logs will be saved locally.", "yellow", attrs=["bold"]))
-
-    if cfg.seed is not None:
-        set_seed(cfg.seed)
-
-    # Check device is available
-    device = get_safe_torch_device(cfg.policy.device, log=True)
-    torch.backends.cudnn.benchmark = True
-    torch.backends.cuda.matmul.allow_tf32 = True
-
-    logging.info("Creating dataset")
-    dataset = make_dataset(cfg)
-    #logging.info(f"Dataset info:\n{pformat(dataset.meta)}")
-
-    features = dataset.meta.features
-    camera_keys = [k for k in features if k.startswith("observation.images.") and "tactile" not in k and not k.endswith("carpet_0")]
-    tactile_keys = [k for k in features if k.startswith("observation.images.") and "tactile" in k or k.endswith("carpet_0")]
-
-    clip_dim: int = 512
-    features_per_group: int = 16
-    resnet_lr: float = 1e-5
-    projection_lr: float = 1e-4
-    n_epochs: int = 1000
-    n_cameras: int = len(camera_keys)
-    plot_freq: int = 50
-
-    # get resnet models for each camera
-    vision_encoder = modified_resnet18(weights=None, features_per_group=features_per_group).to(device)
-    # create a projection head
-    vision_projection = ClipProjectionHead(out_dim=clip_dim).to(device)
-
-    # get resnet models for each tactile
-    tactile_encoder = modified_resnet18(weights=None, features_per_group=features_per_group).to(device)
-    # create a projection head
-    tactile_projection = ClipProjectionHead(out_dim=clip_dim).to(device)
-
-    optim_params = [{"params": tactile_encoder.parameters(), "lr": resnet_lr},
-                    {"params": tactile_projection.parameters(), "lr": projection_lr},
-                    {"params": vision_encoder.parameters(), "lr": resnet_lr},
-                    {"params": vision_projection.parameters(), "lr": projection_lr},]
-
-    print('optim_params:', optim_params)
-
-    optimizer = torch.optim.Adam(optim_params)
-    
-    training_losses = np.empty([n_epochs, n_cameras])
-    testing_losses = np.empty([n_epochs, n_cameras])
-
-    shuffle = True
-    sampler = None
-
-    dataloader = torch.utils.data.DataLoader(
-        dataset,
-        num_workers=cfg.num_workers,
-        batch_size=cfg.batch_size,
-        shuffle=shuffle,
-        sampler=sampler,
-        pin_memory=device.type != "cpu",
-        drop_last=False,
-    )
-
-    print(dataset.num_episodes)
-
-    for epoch in tqdm(range(n_epochs)):
-    # train the model
-        training_loss = np.zeros(n_cameras)
-
-        tactile_encoder.train()
-        tactile_projection.train()
-        vision_encoder.train()
-        vision_projection.train(
-        )
-
-        for batch_idx, batch in enumerate(dataloader):
-            print('Batch idx:', batch_idx)
-            print('Batch keys:', batch.keys())
-
-            for k, v in batch.items():
-                if isinstance(v, torch.Tensor):
-                    batch[k] = v.to(device, non_blocking=True)
-
-            camera_keys = [k for k in camera_keys if "cam_left_high" not in k]
-            cam_tensors = [batch[k] for k in camera_keys] # 1, 3, 480, 640
-            images = torch.stack(cam_tensors, dim=1) # 1, 1, 3, 480, 640 (B, N, C, H, W)
-
-            tactile_keys = [k for k in tactile_keys if "carpet_0" in k]
-            tac_tensors = [batch[k] for k in tactile_keys]  
-            tactiles = torch.stack(tac_tensors, dim=1) # 1, 1, 3, 32, 32
-
-            images = images.to(device)
-            tactiles = tactiles.to(device)
-
-            B, n_cameras, C, H, W = images.shape
-            images = images.view(-1, C, H, W)
-            image_embeddings = vision_projection(vision_encoder(images))
-            image_embeddings = image_embeddings.view(B, n_cameras, clip_dim) # 1, 1, 512
-
-            B, n_tactile, C, H, W = tactiles.shape
-            tactiles = tactiles.view(-1, C, H, W)
-            tactile_embeddings = tactile_projection(vision_encoder(tactiles))
-            tactile_embeddings = tactile_embeddings.view(B, n_tactile, clip_dim) # 1, 1, 512
-
-            batch_size = images.shape[0]
-            clip_N = 2
-
-            # calculate target matrix
-            target_matrix = torch.eye(clip_N).to(device)
-
-            if batch_idx == 0 and epoch%plot_freq == 0: # visualize the first batch in each epoch
-                loss, plot_maps = clip_loss(image_embeddings, tactile_embeddings, target_matrix, visualize=True)
-
-                try:
-                    for cam_num, plot_map in enumerate(plot_maps):
-                        plt.figure()
-                        plt.imshow(plot_map)
-                        plt.colorbar()
-                        plt.title(f'Average Softmax Map, Epoch {epoch}, Cam {cam_num} - Train')
-                        plt.close()
-                except:
-                    print('Error in train plots')
-                    raise
-
-            else:
-                loss, _ = clip_loss(image_embeddings, tactile_embeddings, target_matrix, visualize=False)
-
-            training_loss += loss.clone().detach().cpu().numpy()
-            optimizer.zero_grad()
-            loss.mean().backward()
-            optimizer.step()
-'''
-
 def clip_loss(image_embeddings:torch.Tensor, tactile_embeddings:torch.Tensor, target_matrix:torch.Tensor, logit_scale = 1.0, visualize = False):
-    n_cameras = image_embeddings.shape[1]
-    batch_size = image_embeddings.shape[0]
+    n_cameras = 1
+    batch_size = 4
 
     visualizations = []
     image_embeddings = image_embeddings.squeeze(1)      # (B, D)
