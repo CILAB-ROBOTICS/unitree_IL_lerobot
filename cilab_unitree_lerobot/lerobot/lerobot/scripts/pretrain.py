@@ -64,6 +64,10 @@ from torch.utils.data import DataLoader
 from matplotlib import pyplot as plt
 from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
 
+import matplotlib
+matplotlib.use('Agg')
+from matplotlib import pyplot as plt
+
 def replace_submodules(
         root_module: nn.Module,
         predicate: Callable[[nn.Module], bool],
@@ -229,34 +233,57 @@ class ClipDataset(torch.utils.data.Dataset):
                     
                 self.episodes[episode_id] = (torch.stack(all_cam_images, axis=0), torch.stack(all_gelsight_images, axis=0), torch.stack(all_positions, axis=0))
 
+def clip_loss(image_embeddings:torch.Tensor, tactile_embeddings:torch.Tensor, target_matrix:torch.Tensor, logit_scale = 1.0, visualize = False):
+
+    visualizations = []
+    image_embeddings = image_embeddings.squeeze(1)      # (B, D)
+    tactile_embeddings = tactile_embeddings.squeeze(1)    # (B, D)
+
+    image_logits   = logit_scale * (image_embeddings @ tactile_embeddings.T)  # (B, B)
+    tactile_logits = logit_scale * (tactile_embeddings @ image_embeddings.T)  # (B, B)
+
+    if visualize:
+        visualizations = image_logits[0].clone().detach().cpu().numpy()/logit_scale
+    
+    device = image_embeddings.device
+    B = image_embeddings.shape[0]
+    targets = torch.arange(image_embeddings.shape[0], device=device)
+
+    # flatten the batch and camera dimensions, then calculate the loss
+    image_logits = image_logits.reshape(B, B)
+    tactile_logits = tactile_logits.reshape(B, B)
+
+    # need to make the target matrix B, N, N
+    image_loss = F.cross_entropy(image_logits, targets)
+    tactile_loss = F.cross_entropy(tactile_logits, targets)
+
+    loss = ((image_loss + tactile_loss)/2.0).mean(dim=0)
+
+    return loss, visualizations
+
 def clip_pretraining(train_dataset,
                      test_dataset,
                      device: torch.device,
                      save_dir: str,
                      save_freq: int = 100,
-                     plot_freq: int = 50,
-                     n_epochs: int = 10,
+                     plot_freq: int = 5,
+                     n_epochs: int = 100,
                      clip_dim: int = 512,
                      features_per_group: int = 16,
                      resnet_lr: float = 1e-5,
-                     projection_lr: float = 1e-4):
+                     projection_lr: float = 1e-4,
+                     batch_size: int = 4):
 
-    import matplotlib
-    matplotlib.use('Agg')
-    from matplotlib import pyplot as plt
-    
     if save_dir[-1] == '/':
         save_dir = save_dir[:-1]
 
-    # get the camera, gelsight, and state dimensions from the dataset
+    # get the camera, tactile, and state dimensions from the dataset
     features = train_dataset.meta.features
+    # Filter camera image keys (excluding tactile sensors)
     camera_keys = [k for k in features if k.startswith("observation.images.") and "tactile" not in k and not k.endswith("carpet_0")]
+    # Filter tactile sensor keys (tactile and carpet sensors)
     tactile_keys = [k for k in features if k.startswith("observation.images.") and "tactile" in k or k.endswith("carpet_0")]
-    n_cameras = 1 #len(camera_keys)
-
-    #camera_sizes = [dataset.image_size]*n_cameras
-    #gelsight_size = dataset.gelsight_size
-    state_size = 3
+    n_cameras = len(camera_keys)
     
     # get resnet models for each camera
     vision_encoder = modified_resnet18(weights=None, features_per_group=features_per_group).to(device)
@@ -280,6 +307,9 @@ def clip_pretraining(train_dataset,
     training_losses = np.empty([n_epochs, n_cameras])
     testing_losses = np.empty([n_epochs, n_cameras])
 
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, drop_last=False)
+    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, drop_last=False)
+    
     for epoch in tqdm(range(n_epochs)):
     # train the model
         training_loss = np.zeros(n_cameras)
@@ -289,17 +319,13 @@ def clip_pretraining(train_dataset,
         vision_encoder.train()
         vision_projection.train()
 
-        train_loader = DataLoader(train_dataset, batch_size=4, shuffle=True)
-        test_loader = DataLoader(test_dataset, batch_size=4, shuffle=True)
-
         for batch_idx, batch in enumerate(train_loader):
             for k, v in batch.items():
-                #print('Batch key:', k, 'Value shape/type:', v.shape if isinstance(v, torch.Tensor) else type(v))
                 if isinstance(v, torch.Tensor):
                     batch[k] = v.to(device, non_blocking=True)
 
             camera_keys = [k for k in camera_keys if "cam_left_high" not in k]
-            cam_tensors = [batch[k] for k in camera_keys] # n_cameras, C, H, W
+            cam_tensors = [batch[k] for k in camera_keys] # n_cameras, C, H, W 
             images = torch.stack(cam_tensors, dim=1) # B, N, C, H, W
 
             tactile_keys = [k for k in tactile_keys if "carpet_0" in k]
@@ -319,10 +345,8 @@ def clip_pretraining(train_dataset,
             tactile_embeddings = tactile_projection(vision_encoder(tactiles))
             tactile_embeddings = tactile_embeddings.view(B, n_tactile, clip_dim) # 1, 1, 512
 
-            batch_size = 4
-            clip_N = 2
-
             # calculate target matrix
+            clip_N = n_cameras + n_tactile
             target_matrix = torch.eye(clip_N).to(device)
 
             if batch_idx == 0 and epoch%plot_freq == 0: # visualize the first batch in each epoch
@@ -346,8 +370,6 @@ def clip_pretraining(train_dataset,
             optimizer.zero_grad()
             loss.mean().backward()
             optimizer.step()
-            print(f'Epoch {epoch} Batch {batch_idx} Train Loss: {loss.mean().item():.4f}')
-
         training_losses[epoch] = training_loss/len(train_loader)
 
         # test the model
@@ -357,15 +379,12 @@ def clip_pretraining(train_dataset,
         vision_projection.eval()
 
         test_loss = np.zeros(n_cameras)
+
         with torch.no_grad():
             for batch_idx, batch in enumerate(test_loader):
                 for k, v in batch.items():
                     if isinstance(v, torch.Tensor):
                         batch[k] = v.to(device, non_blocking=True)
-
-                # forward pass
-                batch_size = 4
-                clip_N = 2
 
                 camera_keys = [k for k in camera_keys if "cam_left_high" not in k]
                 cam_tensors = [batch[k] for k in camera_keys] # n_cameras, C, H, W
@@ -412,7 +431,6 @@ def clip_pretraining(train_dataset,
                 else:
                     loss, _ = clip_loss(image_embeddings, tactile_embeddings, target_matrix, visualize=True)
                 test_loss += loss.clone().detach().cpu().numpy()
-                print(f'Epoch {epoch} Batch {batch_idx} Test Loss: {loss.mean().item():.4f}')
         testing_losses[epoch] = test_loss/len(test_loader)
 
         # plot the training and testing losses
@@ -439,31 +457,16 @@ def clip_pretraining(train_dataset,
             torch.save(tactile_encoder.state_dict(), f'{save_dir}/epoch_{epoch}_tactile_encoder.pth')
             torch.save(tactile_projection.state_dict(), f'{save_dir}/epoch_{epoch}_tactile_projection.pth')
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 def run_clip_pretraining():
+    start_time = time.time()
     save_dir = "data/clip_models/"
     os.makedirs(save_dir, exist_ok=True)
 
+    # Define train and test dataset IDs from HuggingFace
     train_dataset_id = "eunjuri/towel_strong_train_full"
     test_dataset_id = "eunjuri/towel_strong_test_full"
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    batch_size_train = 3
-    batch_size_test = 3
 
     train_dataset = LeRobotDataset(repo_id=train_dataset_id)
     test_dataset  = LeRobotDataset(repo_id=test_dataset_id)
@@ -483,40 +486,16 @@ def run_clip_pretraining():
         f.write(f'train_dataset: {train_dataset}\n')
         f.write(f'test_dataset: {test_dataset}\n')
 
-    clip_pretraining(train_dataset, test_dataset, device, save_dir=f'{save_dir}/{n}', clip_dim=512, features_per_group=16, n_epochs=1501)
-
-def clip_loss(image_embeddings:torch.Tensor, tactile_embeddings:torch.Tensor, target_matrix:torch.Tensor, logit_scale = 1.0, visualize = False):
-    n_cameras = 1
-    batch_size = 4
-
-    visualizations = []
-    image_embeddings = image_embeddings.squeeze(1)      # (B, D)
-    tactile_embeddings = tactile_embeddings.squeeze(1)    # (B, D)
-
-    image_logits   = logit_scale * (image_embeddings @ tactile_embeddings.T)  # (B, B)
-    tactile_logits = logit_scale * (tactile_embeddings @ image_embeddings.T)  # (B, B)
-
-    if visualize:
-        visualizations = image_logits[0].clone().detach().cpu().numpy()/logit_scale
+    clip_pretraining(train_dataset, test_dataset, device, save_dir=f'{save_dir}/{n}', clip_dim=512, features_per_group=16, n_epochs=100)
     
-    device = image_embeddings.device
-    B = image_embeddings.shape[0]
-    targets = torch.arange(image_embeddings.shape[0], device=device)
-
-    # flatten the batch and camera dimensions, then calculate the loss
-    image_logits = image_logits.reshape(B, B)
-    tactile_logits = tactile_logits.reshape(B, B)
-
-    # need to make the target matrix B, N, N
-    image_loss = F.cross_entropy(image_logits, targets)
-    tactile_loss = F.cross_entropy(tactile_logits, targets)
-
-    loss = ((image_loss + tactile_loss)/2.0).mean(dim=0)
-
-    return loss, visualizations
-
+    elapsed_time = time.time() - start_time
+    minutes = int(elapsed_time // 60)
+    seconds = int(elapsed_time % 60)
     
+    logging.info("CLIP pretraining completed successfully!")
+    logging.info(f"Models saved to: {save_dir}/{n}/")
+    logging.info(f"Total training time: {minutes}m {seconds}s")
+
 if __name__ == "__main__":
     init_logging()
     run_clip_pretraining()
-    logging.info("All done!")
