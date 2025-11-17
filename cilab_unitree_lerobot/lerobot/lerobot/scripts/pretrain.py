@@ -13,88 +13,57 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import argparse
+import io
+import os
 import logging
 import time
-from contextlib import nullcontext
-from pprint import pformat
-from typing import Any
+from typing import Callable
+from collections import defaultdict
 
-import torch
-from termcolor import colored
-from torch.amp import GradScaler
-from torch.optim import Optimizer
-
-from lerobot.common.datasets.factory import make_dataset
-from lerobot.common.datasets.sampler import EpisodeAwareSampler
-from lerobot.common.datasets.utils import cycle
-from lerobot.common.optim.factory import make_optimizer_and_scheduler
-from lerobot.common.policies.utils import get_device_from_parameters
-from lerobot.common.utils.logging_utils import AverageMeter, MetricsTracker
-from lerobot.common.utils.random_utils import set_seed
-from lerobot.common.utils.train_utils import (
-    get_step_checkpoint_dir,
-    get_step_identifier,
-    load_training_state,
-    save_checkpoint,
-    update_last_checkpoint,
-)
-from lerobot.common.utils.utils import (
-    format_big_number,
-    get_safe_torch_device,
-    has_method,
-    init_logging,
-)
-from lerobot.common.utils.wandb_utils import WandBLogger
-from lerobot.configs.train import TrainPipelineConfig
-from lerobot.configs import parser
-
-import torchvision
-from torch import nn
-import torch
-from typing import Tuple, Dict, Union, Callable, List
-from torch.utils.data import DataLoader
-import h5py
-import os
-import cv2
-from torchvision.transforms import Normalize
 import numpy as np
+import torch
 import torch.nn.functional as F
-from tqdm import tqdm
+import torchvision
+import wandb
+from PIL import Image
 from matplotlib import pyplot as plt
-from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
+from sklearn.manifold import TSNE
+from torch import nn
+from torch.utils.data import DataLoader
+from tqdm import tqdm
 
 import matplotlib
 matplotlib.use('Agg')
-from matplotlib import pyplot as plt
-import wandb
-import io
-from PIL import Image
-import argparse
-from sklearn.manifold import TSNE
 
-def topk_metrics(image_embeddings: torch.Tensor, tactile_embeddings: torch.Tensor, ks=(1, 5, 10)):
+from lerobot.common.utils.utils import init_logging
+from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
+from lerobot.configs import parser
 
-    device = image_embeddings.device
-    B = image_embeddings.size(0)
+def accuracy(embedding1: torch.Tensor, embedding2: torch.Tensor, topk=(1, 5, 10)):
+    device = embedding1.device
+    B = embedding1.size(0)
     targets = torch.arange(B, device=device)  
 
-    sim_i2t = image_embeddings @ tactile_embeddings.T
-    sim_t2i = tactile_embeddings @ image_embeddings.T
+    sim_1to2 = embedding1 @ embedding2.T
+    sim_2to1 = embedding2 @ embedding1.T
 
     metrics = {}
 
-    for k in ks:
-        k_eff = min(k, B) 
+    for k in topk:
+        k_eff = min(k, B)
 
-        # image → tactile
-        topk_i2t = sim_i2t.topk(k_eff, dim=-1).indices  # (B, k_eff)
-        correct_i2t = (topk_i2t == targets.unsqueeze(1)).any(dim=-1)  # (B,)
-        metrics[f"top{k}_i2t"] = correct_i2t.float().mean().item()
+        if k_eff < k:
+            logging.warning(f"Requested top-{k} but batch size is {B}. ")
+            continue
 
-        # tactile → image
-        topk_t2i = sim_t2i.topk(k_eff, dim=-1).indices
-        correct_t2i = (topk_t2i == targets.unsqueeze(1)).any(dim=-1)
-        metrics[f"top{k}_t2i"] = correct_t2i.float().mean().item()
+        topk_1to2 = sim_1to2.topk(k_eff, dim=-1).indices  # (B, k_eff)
+        correct_1to2 = (topk_1to2 == targets.unsqueeze(1)).any(dim=-1)  # (B,)
+        metrics[f"top{k}_1to2"] = correct_1to2.float().mean().item()
+
+        topk_2to1 = sim_2to1.topk(k_eff, dim=-1).indices
+        correct_2to1 = (topk_2to1 == targets.unsqueeze(1)).any(dim=-1)
+        metrics[f"top{k}_2to1"] = correct_2to1.float().mean().item()
 
     return metrics
 
@@ -239,6 +208,10 @@ def clip_pretraining(train_dataset, test_dataset, save_dir: str, args):
     camera_keys = [k for k in features if k.startswith("observation.images.") and "tactile" not in k and not k.endswith("carpet_0")]
     # Filter tactile sensor keys (tactile and carpet)
     tactile_keys = [k for k in features if k.startswith("observation.images.") and "tactile" in k or k.endswith("carpet_0")]
+    
+    camera_keys = [k for k in camera_keys if "cam_left_high" not in k]
+    tactile_keys = [k for k in tactile_keys if "carpet_0" in k]
+
     n_cameras = len(camera_keys)
     
     # get resnet models for each camera
@@ -277,11 +250,9 @@ def clip_pretraining(train_dataset, test_dataset, save_dir: str, args):
                 if isinstance(v, torch.Tensor):
                     batch[k] = v.to(args.device, non_blocking=True)
 
-            camera_keys = [k for k in camera_keys if "cam_left_high" not in k]
             cam_tensors = [batch[k] for k in camera_keys] # n_cameras, C, H, W 
             images = torch.stack(cam_tensors, dim=1) # B, N, C, H, W
 
-            tactile_keys = [k for k in tactile_keys if "carpet_0" in k]
             tac_tensors = [batch[k] for k in tactile_keys]  
             tactiles = torch.stack(tac_tensors, dim=1) # 1, 1, 3, 32, 32
 
@@ -295,7 +266,7 @@ def clip_pretraining(train_dataset, test_dataset, save_dir: str, args):
 
             B, n_tactile, C, H, W = tactiles.shape
             tactiles = tactiles.view(-1, C, H, W)
-            tactile_embeddings = tactile_projection(vision_encoder(tactiles))
+            tactile_embeddings = tactile_projection(tactile_encoder(tactiles))
             tactile_embeddings = tactile_embeddings.view(B, n_tactile, args.clip_dim) # 1, 1, 512
 
             # calculate target matrix
@@ -312,7 +283,6 @@ def clip_pretraining(train_dataset, test_dataset, save_dir: str, args):
                         plt.savefig(buf, format="png")
                         buf.seek(0)
                         plt.close()
-
                         wandb.log({
                             "train/similarity_matrix": wandb.Image(Image.open(buf)),
                             "epoch": epoch
@@ -336,7 +306,9 @@ def clip_pretraining(train_dataset, test_dataset, save_dir: str, args):
 
         test_loss = np.zeros(n_cameras)
 
-        topk_sums = {"top1_i2t": 0.0, "top5_i2t": 0.0, "top10_i2t": 0.0, "top1_t2i": 0.0, "top5_t2i": 0.0, "top10_t2i": 0.0,}
+        # top-k accuracy
+        #topk_sums = {"top1_1to2": 0.0, "top5_1to2": 0.0, "top10_1to2": 0.0, "top1_2to1": 0.0, "top5_2to1": 0.0, "top10_2to1": 0.0,}
+        topk_sums = defaultdict(float)
         total_samples = 0
         all_img_embeds = []
         all_tac_embeds = []
@@ -365,10 +337,10 @@ def clip_pretraining(train_dataset, test_dataset, save_dir: str, args):
 
                 B, n_tactile, C, H, W = tactiles.shape
                 tactiles = tactiles.view(-1, C, H, W)
-                tactile_embeddings = tactile_projection(vision_encoder(tactiles))
+                tactile_embeddings = tactile_projection(tactile_encoder(tactiles))
                 tactile_embeddings = tactile_embeddings.view(B, n_tactile, args.clip_dim) # 1, 1, 512
 
-                batch_topk = topk_metrics(image_embeddings.squeeze(1), tactile_embeddings.squeeze(1), ks=(1, 5, 10))
+                batch_topk = accuracy(image_embeddings.squeeze(1), tactile_embeddings.squeeze(1), topk=(1, 5, 10))
                 for k, v in batch_topk.items():
                     topk_sums[k] += v * B
                 total_samples += B
@@ -399,14 +371,14 @@ def clip_pretraining(train_dataset, test_dataset, save_dir: str, args):
                     except:
                         raise
                 else:
-                    loss, _ = clip_loss(image_embeddings, tactile_embeddings, target_matrix, visualize=True)
+                    loss, _ = clip_loss(image_embeddings, tactile_embeddings, target_matrix, visualize=False)
                 test_loss += loss.clone().detach().cpu().numpy()
         testing_losses[epoch] = test_loss/len(test_loader)
         
         epoch_topk = {k: (v / total_samples) for k, v in topk_sums.items()}
 
-        if (epoch + 1) >= 10 and ((epoch + 1) % 10 == 0):
-        #if epoch >= 0:
+        #if (epoch + 1) >= 10 and ((epoch + 1) % 10 == 0):
+        if epoch >= 0:
             try:
                 if len(all_img_embeds) == 0 or len(all_tac_embeds) == 0:
                     logging.warning("No embeddings for t-SNE, skipping.")
@@ -426,33 +398,21 @@ def clip_pretraining(train_dataset, test_dataset, save_dir: str, args):
                     emb_2d = tsne.fit_transform(emb)
 
                     plt.figure(figsize=(6, 6))
-                    plt.scatter(
-                        emb_2d[labels == 0, 0], emb_2d[labels == 0, 1],
-                        s=5, label="image", alpha=0.6
-                    )
-                    plt.scatter(
-                        emb_2d[labels == 1, 0], emb_2d[labels == 1, 1],
-                        s=5, label="tactile", alpha=0.6
-                    )
+                    plt.scatter(emb_2d[labels == 0, 0], emb_2d[labels == 0, 1], s=5, label="image", alpha=0.6)
+                    plt.scatter(emb_2d[labels == 1, 0], emb_2d[labels == 1, 1], s=5, label="tactile", alpha=0.6)
                     plt.legend()
-                    plt.title(f"t-SNE (epoch {epoch+1})")
-
-                    # 👉 메모리 버퍼에 저장
                     buf = io.BytesIO()
                     plt.savefig(buf, format="png", bbox_inches="tight")
                     buf.seek(0)
                     plt.close()
-
                     if args.wandb_enable:
-                        tsne_img = Image.open(buf)          # 🔹 BytesIO → PIL.Image
+                        tsne_img = Image.open(buf) 
                         wandb.log({
                             "tsne/test_embeddings": wandb.Image(tsne_img),
                             "epoch": epoch,
                         })
             except Exception as e:
                 logging.warning(f"t-SNE plotting failed at epoch {epoch+1}: {e}")
-
-
 
         # Log metrics to W&B
         if args.wandb_enable:
@@ -461,14 +421,10 @@ def clip_pretraining(train_dataset, test_dataset, save_dir: str, args):
                 "test/loss": testing_losses[epoch].mean(),
                 "epoch": epoch,
             }
-            log_dict.update({
-                "test/top1: image to tactile": epoch_topk["top1_i2t"],
-                "test/top5: image to tactile": epoch_topk["top5_i2t"],
-                "test/top10: image to tactile": epoch_topk["top10_i2t"],
-                "test/top1: tactile to image": epoch_topk["top1_t2i"],
-                "test/top5: tactile to image": epoch_topk["top5_t2i"],
-                "test/top10: tactile to image": epoch_topk["top10_t2i"],
-            })
+            for k, v in epoch_topk.items():
+                direction = "embedding1 to embedding2" if "1to2" in k else "embedding2 to embedding1"
+                metric_name = k.split('_')[0]
+                log_dict[f"test/{metric_name}: {direction}"] = v
             wandb.log(log_dict)
 
         # save the models
