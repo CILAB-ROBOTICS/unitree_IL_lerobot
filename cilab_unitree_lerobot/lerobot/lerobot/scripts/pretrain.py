@@ -186,6 +186,7 @@ def clip_loss(image_embeddings:torch.Tensor, tactile_embeddings:torch.Tensor, ta
 def clip_pretraining(train_dataset, test_dataset, save_dir: str, args):
     if save_dir[-1] == '/':
         save_dir = save_dir[:-1]
+    run_name = os.path.basename(save_dir)
 
     features = train_dataset.meta.features
     camera_keys = [k for k in features if k.startswith("observation.images.") and "tactile" not in k and not k.endswith("carpet_0")]
@@ -443,10 +444,11 @@ def clip_pretraining(train_dataset, test_dataset, save_dir: str, args):
 
         # save the models
         if (epoch+1) % args.save_freq == 0:
-            torch.save(vision_encoder.state_dict(), f'{save_dir}/epoch_{epoch}_vision_encoder.pth')
-            torch.save(vision_projection.state_dict(), f'{save_dir}/epoch_{epoch}_vision_projection.pth')
-            torch.save(tactile_encoder.state_dict(), f'{save_dir}/epoch_{epoch}_tactile_encoder.pth')
-            torch.save(tactile_projection.state_dict(), f'{save_dir}/epoch_{epoch}_tactile_projection.pth')
+            checkpoint_prefix = f'{run_name}_epoch_{epoch}'
+            torch.save(vision_encoder.state_dict(), f'{save_dir}/{checkpoint_prefix}_vision_encoder.pth')
+            torch.save(vision_projection.state_dict(), f'{save_dir}/{checkpoint_prefix}_vision_projection.pth')
+            torch.save(tactile_encoder.state_dict(), f'{save_dir}/{checkpoint_prefix}_tactile_encoder.pth')
+            torch.save(tactile_projection.state_dict(), f'{save_dir}/{checkpoint_prefix}_tactile_projection.pth')
 
 def run_clip_pretraining(args):
     # argparse with nargs='+' already returns a list
@@ -454,7 +456,7 @@ def run_clip_pretraining(args):
     test_dataset_ids = args.test_dataset_id
     
     if args.wandb_enable:
-        wandb.init(
+        wandb_run = wandb.init(
             project=args.wandb_project,
             entity=args.wandb_entity,
             name=args.wandb_name,
@@ -472,6 +474,10 @@ def run_clip_pretraining(args):
                 "device": args.device,
             }
         )
+        run_name = wandb_run.name
+    else:
+        wandb_run = None
+        run_name = args.wandb_name or time.strftime("%Y%m%d_%H%M%S")
 
     start_time = time.time()
     os.makedirs(args.save_dir, exist_ok=True)
@@ -489,23 +495,21 @@ def run_clip_pretraining(args):
         logging.warning(f"Combining {len(test_dataset_ids)} test datasets: {test_dataset_ids}")
         test_dataset = MultiLeRobotDataset(repo_ids=test_dataset_ids)
 
-    ns = [-1]
-    for folder in os.listdir(args.save_dir):
-        try:
-            ns.append(int(folder))
-        except ValueError:
-            pass
+    desired_dir = os.path.join(args.save_dir, run_name)
+    save_run_dir = desired_dir
+    suffix = 1
+    while os.path.exists(save_run_dir):
+        save_run_dir = f"{desired_dir}_{suffix}"
+        suffix += 1
+    os.makedirs(save_run_dir, exist_ok=True)
 
-    n = max(ns) + 1
-    os.makedirs(f'{args.save_dir}/{n}', exist_ok=True)
-
-    with open(f'{args.save_dir}/{n}/run_stats.txt', 'w') as f:
+    with open(f'{save_run_dir}/run_stats.txt', 'w') as f:
         f.write(f'train_datasets: {train_dataset_ids}\n')
         f.write(f'train_dataset: {train_dataset}\n')
         f.write(f'test_datasets: {test_dataset_ids}\n')
         f.write(f'test_dataset: {test_dataset}\n')
 
-    clip_pretraining(train_dataset, test_dataset, save_dir=f'{args.save_dir}/{n}', args=args)
+    clip_pretraining(train_dataset, test_dataset, save_dir=save_run_dir, args=args)
     
     elapsed_time = time.time() - start_time
     minutes = int(elapsed_time // 60)
