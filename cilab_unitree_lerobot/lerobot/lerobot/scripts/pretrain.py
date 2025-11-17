@@ -1,18 +1,3 @@
-#!/usr/bin/env python
-
-# Copyright 2024 The HuggingFace Inc. team. All rights reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 import argparse
 import io
 import os
@@ -37,7 +22,7 @@ import matplotlib
 matplotlib.use('Agg')
 
 from lerobot.common.utils.utils import init_logging
-from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
+from lerobot.common.datasets.lerobot_dataset import LeRobotDataset, MultiLeRobotDataset
 from lerobot.configs import parser
 
 def accuracy(embedding1: torch.Tensor, embedding2: torch.Tensor, topk=(1, 5, 10)):
@@ -202,11 +187,8 @@ def clip_pretraining(train_dataset, test_dataset, save_dir: str, args):
     if save_dir[-1] == '/':
         save_dir = save_dir[:-1]
 
-    # get the camera, tactile, and state dimensions from the dataset
     features = train_dataset.meta.features
-    # Filter camera image keys (excluding tactile)
     camera_keys = [k for k in features if k.startswith("observation.images.") and "tactile" not in k and not k.endswith("carpet_0")]
-    # Filter tactile sensor keys (tactile and carpet)
     tactile_keys = [k for k in features if k.startswith("observation.images.") and "tactile" in k or k.endswith("carpet_0")]
     
     camera_keys = [k for k in camera_keys if "cam_left_high" not in k]
@@ -214,20 +196,17 @@ def clip_pretraining(train_dataset, test_dataset, save_dir: str, args):
 
     n_cameras = len(camera_keys)
     
-    # get resnet models for each camera
+
     vision_encoder = modified_resnet18(weights=None, features_per_group=args.features_per_group).to(args.device)
-    # create a projection head
     vision_projection = ClipProjectionHead(out_dim=args.clip_dim).to(args.device)
-    # get resnet models for each tactile
+
     tactile_encoder = modified_resnet18(weights=None, features_per_group=args.features_per_group).to(args.device)
-    # create a projection head
     tactile_projection = ClipProjectionHead(out_dim=args.clip_dim).to(args.device)
 
     optim_params = [{"params": tactile_encoder.parameters(), "lr": args.resnet_lr},
                     {"params": tactile_projection.parameters(), "lr": args.projection_lr},
                     {"params": vision_encoder.parameters(), "lr": args.resnet_lr},
                     {"params": vision_projection.parameters(), "lr": args.projection_lr},]
-
     optimizer = torch.optim.Adam(optim_params)
     
     training_losses = np.empty([args.n_epochs, n_cameras])
@@ -236,8 +215,7 @@ def clip_pretraining(train_dataset, test_dataset, save_dir: str, args):
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, drop_last=False)
     test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False, drop_last=False)
     
-    for epoch in tqdm(range(args.n_epochs)):
-    # train the model
+    for epoch in tqdm(range(args.n_epochs)): # train the model
         training_loss = np.zeros(n_cameras)
 
         tactile_encoder.train()
@@ -306,31 +284,47 @@ def clip_pretraining(train_dataset, test_dataset, save_dir: str, args):
 
         test_loss = np.zeros(n_cameras)
 
-        # top-k accuracy
-        #topk_sums = {"top1_1to2": 0.0, "top5_1to2": 0.0, "top10_1to2": 0.0, "top1_2to1": 0.0, "top5_2to1": 0.0, "top10_2to1": 0.0,}
         topk_sums = defaultdict(float)
         total_samples = 0
         all_img_embeds = []
         all_tac_embeds = []
+        all_img_dataset_indices = []
+        all_tac_dataset_indices = []
+
+        # Get dataset names for labeling
+        if isinstance(test_dataset, MultiLeRobotDataset):
+            dataset_names = test_dataset.repo_ids
+        else:
+            dataset_names = [test_dataset.repo_id]
 
         with torch.no_grad():
+            test_features = test_dataset.meta.features
+            test_camera_keys = [k for k in test_features if k.startswith("observation.images.") and "tactile" not in k and not k.endswith("carpet_0")]
+            test_tactile_keys = [k for k in test_features if k.startswith("observation.images.") and "tactile" in k or k.endswith("carpet_0")]
+            test_camera_keys = [k for k in test_camera_keys if "cam_left_high" not in k]
+            test_tactile_keys = [k for k in test_tactile_keys if "carpet_0" in k]
+            
             for batch_idx, batch in enumerate(test_loader):
                 for k, v in batch.items():
                     if isinstance(v, torch.Tensor):
                         batch[k] = v.to(args.device, non_blocking=True)
 
-                camera_keys = [k for k in camera_keys if "cam_left_high" not in k]
-                cam_tensors = [batch[k] for k in camera_keys] # n_cameras, C, H, W
+                cam_tensors = [batch[k] for k in test_camera_keys] # n_cameras, C, H, W
                 images = torch.stack(cam_tensors, dim=1) # B, N, C, H, W
 
-                tactile_keys = [k for k in tactile_keys if "carpet_0" in k]
-                tac_tensors = [batch[k] for k in tactile_keys]  
+                tac_tensors = [batch[k] for k in test_tactile_keys]  
                 tactiles = torch.stack(tac_tensors, dim=1) # 1, 1, 3, 32, 32
 
                 images = images.to(args.device)
                 tactiles = tactiles.to(args.device)
 
                 B, n_cameras, C, H, W = images.shape
+                
+                # Extract dataset_index if available (for MultiLeRobotDataset)
+                if "dataset_index" in batch:
+                    dataset_indices = batch["dataset_index"].cpu().numpy()
+                else:
+                    dataset_indices = np.zeros(B, dtype=np.int32)
                 images = images.view(-1, C, H, W)
                 image_embeddings = vision_projection(vision_encoder(images))
                 image_embeddings = image_embeddings.view(B, n_cameras, args.clip_dim) # 1, 1, 512
@@ -347,13 +341,13 @@ def clip_pretraining(train_dataset, test_dataset, save_dir: str, args):
 
                 all_img_embeds.append(image_embeddings.squeeze(1).detach().cpu().numpy())
                 all_tac_embeds.append(tactile_embeddings.squeeze(1).detach().cpu().numpy())
+                all_img_dataset_indices.append(dataset_indices)
+                all_tac_dataset_indices.append(dataset_indices)
 
-                # calculate target matrix
+                clip_N = n_cameras + n_tactile
                 target_matrix = torch.eye(clip_N).to(args.device)
 
-                # calculate loss - vector of per-camera losses
-                            # calculate loss - vector of per-camera losses
-                if batch_idx == 0 and epoch%args.plot_freq == 0: # visualize the first batch in each epoch
+                if batch_idx == 0 and epoch%args.plot_freq == 0:
                     loss, plot_maps = clip_loss(image_embeddings, tactile_embeddings, target_matrix, visualize=True)
                     try:
                         if args.wandb_enable:
@@ -373,6 +367,7 @@ def clip_pretraining(train_dataset, test_dataset, save_dir: str, args):
                 else:
                     loss, _ = clip_loss(image_embeddings, tactile_embeddings, target_matrix, visualize=False)
                 test_loss += loss.clone().detach().cpu().numpy()
+        
         testing_losses[epoch] = test_loss/len(test_loader)
         
         epoch_topk = {k: (v / total_samples) for k, v in topk_sums.items()}
@@ -385,9 +380,12 @@ def clip_pretraining(train_dataset, test_dataset, save_dir: str, args):
                 else:
                     img_arr = np.concatenate(all_img_embeds, axis=0)
                     tac_arr = np.concatenate(all_tac_embeds, axis=0)
+                    img_dataset_indices = np.concatenate(all_img_dataset_indices, axis=0)
+                    tac_dataset_indices = np.concatenate(all_tac_dataset_indices, axis=0)
 
                     emb = np.concatenate([img_arr, tac_arr], axis=0)
-                    labels = np.array([0] * len(img_arr) + [1] * len(tac_arr))
+                    modality_labels = np.array([0] * len(img_arr) + [1] * len(tac_arr))  # 0=image, 1=tactile
+                    dataset_labels = np.concatenate([img_dataset_indices, tac_dataset_indices], axis=0)
 
                     tsne = TSNE(
                         n_components=2,
@@ -396,10 +394,27 @@ def clip_pretraining(train_dataset, test_dataset, save_dir: str, args):
                         learning_rate="auto",
                     )
                     emb_2d = tsne.fit_transform(emb)
-                    plt.figure(figsize=(6, 6))
-                    plt.scatter(emb_2d[labels == 0, 0], emb_2d[labels == 0, 1], s=5, label="image", alpha=0.6, color="purple")
-                    plt.scatter(emb_2d[labels == 1, 0], emb_2d[labels == 1, 1], s=5, label="tactile", alpha=0.6, color="pink")
-                    plt.legend()
+                    
+                    # Create color map for datasets
+                    num_datasets = len(dataset_names)
+                    colors = plt.cm.tab10(np.linspace(0, 1, num_datasets))
+                    
+                    plt.figure(figsize=(10, 8))
+                    
+                    # Plot each combination of modality and dataset
+                    for dataset_idx in range(num_datasets):
+                        for modality_idx, modality_name in enumerate(["image", "tactile"]):
+                            mask = (dataset_labels == dataset_idx) & (modality_labels == modality_idx)
+                            if np.any(mask):
+                                dataset_name = dataset_names[dataset_idx].split('/')[-1]  # Get short name
+                                label = f"{dataset_name}_{modality_name}"
+                                color = colors[dataset_idx]
+                                # Make tactile slightly darker
+                                if modality_idx == 1:
+                                    color = color * 0.7
+                                plt.scatter(emb_2d[mask, 0], emb_2d[mask, 1], s=5, label=label, alpha=0.6, color=color)
+                    
+                    plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=8)
                     buf = io.BytesIO()
                     plt.savefig(buf, format="png", bbox_inches="tight")
                     buf.seek(0)
@@ -434,14 +449,18 @@ def clip_pretraining(train_dataset, test_dataset, save_dir: str, args):
             torch.save(tactile_projection.state_dict(), f'{save_dir}/epoch_{epoch}_tactile_projection.pth')
 
 def run_clip_pretraining(args):
+    # argparse with nargs='+' already returns a list
+    train_dataset_ids = args.train_dataset_id
+    test_dataset_ids = args.test_dataset_id
+    
     if args.wandb_enable:
         wandb.init(
             project=args.wandb_project,
             entity=args.wandb_entity,
             name=args.wandb_name,
             config={
-                "train_dataset": args.train_dataset_id,
-                "test_dataset": args.test_dataset_id,
+                "train_datasets": train_dataset_ids,
+                "test_datasets": test_dataset_ids,
                 "n_epochs": args.n_epochs,
                 "batch_size": args.batch_size,
                 "clip_dim": args.clip_dim,
@@ -457,22 +476,33 @@ def run_clip_pretraining(args):
     start_time = time.time()
     os.makedirs(args.save_dir, exist_ok=True)
 
-    train_dataset = LeRobotDataset(repo_id=args.train_dataset_id)
-    test_dataset  = LeRobotDataset(repo_id=args.test_dataset_id)
 
-    # create directory to save models and plots
-    # get all folders in the clip_models directory
+    if len(train_dataset_ids) == 1:
+        train_dataset = LeRobotDataset(repo_id=train_dataset_ids[0])
+    else:
+        logging.warning(f"Combining {len(train_dataset_ids)} train datasets: {train_dataset_ids}")
+        train_dataset = MultiLeRobotDataset(repo_ids=train_dataset_ids)
+
+    if len(test_dataset_ids) == 1:
+        test_dataset = LeRobotDataset(repo_id=test_dataset_ids[0])
+    else:
+        logging.warning(f"Combining {len(test_dataset_ids)} test datasets: {test_dataset_ids}")
+        test_dataset = MultiLeRobotDataset(repo_ids=test_dataset_ids)
+
     ns = [-1]
     for folder in os.listdir(args.save_dir):
-        ns.append(int(folder))
+        try:
+            ns.append(int(folder))
+        except ValueError:
+            pass
 
     n = max(ns) + 1
-    os.makedirs(f'{args.save_dir}/{n}')
-    os.makedirs(f'{args.save_dir}/{n}/graphs')
+    os.makedirs(f'{args.save_dir}/{n}', exist_ok=True)
 
-    # save run stats:
     with open(f'{args.save_dir}/{n}/run_stats.txt', 'w') as f:
+        f.write(f'train_datasets: {train_dataset_ids}\n')
         f.write(f'train_dataset: {train_dataset}\n')
+        f.write(f'test_datasets: {test_dataset_ids}\n')
         f.write(f'test_dataset: {test_dataset}\n')
 
     clip_pretraining(train_dataset, test_dataset, save_dir=f'{args.save_dir}/{n}', args=args)
@@ -487,8 +517,8 @@ def run_clip_pretraining(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('--train_dataset_id', type = str, default = 'eunjuri/towel_strong_train_full', help='HuggingFace train dataset repository ID')
-    parser.add_argument('--test_dataset_id', type = str, default = 'eunjuri/towel_strong_test_full', help='HuggingFace test dataset repository ID')
+    parser.add_argument('--train_dataset_id', type=str, nargs='+', default=['eunjuri/towel_strong_train_full', 'eunjuri/towel_weak_train_full'], help='HuggingFace train dataset repository IDs')
+    parser.add_argument('--test_dataset_id', type=str, nargs='+', default=['eunjuri/towel_strong_test_full', 'eunjuri/towel_weak_test_full'], help='HuggingFace test dataset repository IDs')
 
     # model parameters
     parser.add_argument('--n_epochs', type=int, default=2, help='Number of training epochs')
@@ -511,3 +541,12 @@ if __name__ == "__main__":
 
     init_logging()
     run_clip_pretraining(args)
+
+'''
+python pretrain.py \
+  --train_dataset_id dataset1 dataset2 dataset3 \
+  --test_dataset_id test1 test2 test3 \
+  --n_epochs 10 \
+  --wandb_enable=true \
+  --wandb_name=clip-pretraining \
+'''
