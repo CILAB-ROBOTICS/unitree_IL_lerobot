@@ -60,7 +60,6 @@ from torchvision.transforms import Normalize
 import numpy as np
 import torch.nn.functional as F
 from tqdm import tqdm
-from torch.utils.data import DataLoader
 from matplotlib import pyplot as plt
 from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
 
@@ -68,6 +67,36 @@ import matplotlib
 matplotlib.use('Agg')
 from matplotlib import pyplot as plt
 import wandb
+import io
+from PIL import Image
+import argparse
+from sklearn.manifold import TSNE
+
+def topk_metrics(image_embeddings: torch.Tensor, tactile_embeddings: torch.Tensor, ks=(1, 5, 10)):
+
+    device = image_embeddings.device
+    B = image_embeddings.size(0)
+    targets = torch.arange(B, device=device)  
+
+    sim_i2t = image_embeddings @ tactile_embeddings.T
+    sim_t2i = tactile_embeddings @ image_embeddings.T
+
+    metrics = {}
+
+    for k in ks:
+        k_eff = min(k, B) 
+
+        # image → tactile
+        topk_i2t = sim_i2t.topk(k_eff, dim=-1).indices  # (B, k_eff)
+        correct_i2t = (topk_i2t == targets.unsqueeze(1)).any(dim=-1)  # (B,)
+        metrics[f"top{k}_i2t"] = correct_i2t.float().mean().item()
+
+        # tactile → image
+        topk_t2i = sim_t2i.topk(k_eff, dim=-1).indices
+        correct_t2i = (topk_t2i == targets.unsqueeze(1)).any(dim=-1)
+        metrics[f"top{k}_t2i"] = correct_t2i.float().mean().item()
+
+    return metrics
 
 def replace_submodules(
         root_module: nn.Module,
@@ -121,7 +150,6 @@ def replace_bn_with_gn(
     )
     return root_module
 
-# the projection head for CLIP. I'm using resnet's approach of an average pooling layer followed by a linear layer.
 class ClipProjectionHead(nn.Module):
     def __init__(self, out_dim: int, conditioning_dim: int = 0, num_channels:int = 512, normailize: bool = True):
         """
@@ -168,72 +196,6 @@ def modified_resnet18(weights=None, features_per_group=16) -> nn.Module:
     resnet18 = replace_bn_with_gn(resnet18, features_per_group=features_per_group)
     return resnet18   
 
-class ClipDataset(torch.utils.data.Dataset):
-    def __init__(self, 
-                 episode_ids: List[int], 
-                 dataset_dir: str, 
-                 camera_names: List[str], 
-                 norm_stats: Dict[str, Union[float, np.ndarray]],
-                 image_size: Tuple[int, int] = None, 
-                 tactile_size: Tuple[int, int] = None,
-                 min_distance = 5,
-                 n_images = 10,
-                 is_cluster=False):
-        
-        if is_cluster:
-            # pre-load all the data into memory
-            self.episodes = {}
-            for episode_id in self.episode_ids:
-                dataset_path = os.path.join(self.dataset_dir, f'episode_{episode_id}.hdf5')
-                with h5py.File(dataset_path, 'r') as root:
-                    all_cam_images = []
-                    all_gelsight_images = []
-                    all_positions = []
-                    for timestep in range(self.episode_lengths[episode_id]):
-                        # get camera images
-                        timestep_cam_images = []
-
-                        for cam_name in self.camera_names:
-                            image = root[f'/observations/images/{cam_name}'][timestep]
-                            
-                            # convert to tensor
-                            image = torch.tensor(image, dtype=torch.float32)/255.0
-                            image = torch.einsum('h w c -> c h w', image)
-
-                            # normalize image
-                            image = self.image_normalize(image)
-                            timestep_cam_images.append(image)
-
-                        images = torch.stack(timestep_cam_images, axis=0)
-
-                        # get gelsight data
-                        gelsight_data = root['observations/gelsight/depth_strain_image'][timestep]
-
-                        # resize gelsight data
-                        if self.gelsight_size != gelsight_data.shape[:2]:
-                            raise ValueError("Image size must be the same for all cameras")
-                            gelsight_data = cv2.resize(gelsight_data, (self.gelsight_size[1], self.gelsight_size[0]))
-                        
-                        # convert to tensor
-                        gelsight_data = torch.tensor(gelsight_data, dtype=torch.float32)
-                        gelsight_data = torch.einsum('h w c -> c h w', gelsight_data) # change to c h w
-
-                        # normalize gelsight data
-                        gelsight_data = self.gelsight_normalize(gelsight_data)
-
-                        # get qpos and normalize
-                        position = root['observations/qpos'][timestep]
-                        position = (position - self.position_mean) / self.position_std
-
-                        # don't include the last element, which is the gripper
-                        position = torch.tensor(position[:3], dtype=torch.float32)
-
-                        all_cam_images.append(images)
-                        all_gelsight_images.append(gelsight_data)
-                        all_positions.append(position)
-                    
-                self.episodes[episode_id] = (torch.stack(all_cam_images, axis=0), torch.stack(all_gelsight_images, axis=0), torch.stack(all_positions, axis=0))
-
 def clip_loss(image_embeddings:torch.Tensor, tactile_embeddings:torch.Tensor, target_matrix:torch.Tensor, logit_scale = 1.0, visualize = False):
 
     visualizations = []
@@ -244,8 +206,13 @@ def clip_loss(image_embeddings:torch.Tensor, tactile_embeddings:torch.Tensor, ta
     tactile_logits = logit_scale * (tactile_embeddings @ image_embeddings.T)  # (B, B)
 
     if visualize:
-        visualizations = image_logits[0].clone().detach().cpu().numpy()/logit_scale
-    
+        visualizations = (image_embeddings @ tactile_embeddings.T).detach().cpu().numpy()
+        if isinstance(logit_scale, torch.Tensor):
+            scale = float(logit_scale)
+        else:
+            scale = logit_scale
+        visualizations = visualizations / scale  # (B, B)
+
     device = image_embeddings.device
     B = image_embeddings.shape[0]
     targets = torch.arange(image_embeddings.shape[0], device=device)
@@ -262,56 +229,41 @@ def clip_loss(image_embeddings:torch.Tensor, tactile_embeddings:torch.Tensor, ta
 
     return loss, visualizations
 
-def clip_pretraining(train_dataset,
-                     test_dataset,
-                     device: torch.device,
-                     save_dir: str,
-                     save_freq: int = 100,
-                     plot_freq: int = 5,
-                     n_epochs: int = 100,
-                     clip_dim: int = 512,
-                     features_per_group: int = 16,
-                     resnet_lr: float = 1e-5,
-                     projection_lr: float = 1e-4,
-                     batch_size: int = 4):
-
+def clip_pretraining(train_dataset, test_dataset, save_dir: str, args):
     if save_dir[-1] == '/':
         save_dir = save_dir[:-1]
 
     # get the camera, tactile, and state dimensions from the dataset
     features = train_dataset.meta.features
-    # Filter camera image keys (excluding tactile sensors)
+    # Filter camera image keys (excluding tactile)
     camera_keys = [k for k in features if k.startswith("observation.images.") and "tactile" not in k and not k.endswith("carpet_0")]
-    # Filter tactile sensor keys (tactile and carpet sensors)
+    # Filter tactile sensor keys (tactile and carpet)
     tactile_keys = [k for k in features if k.startswith("observation.images.") and "tactile" in k or k.endswith("carpet_0")]
     n_cameras = len(camera_keys)
     
     # get resnet models for each camera
-    vision_encoder = modified_resnet18(weights=None, features_per_group=features_per_group).to(device)
+    vision_encoder = modified_resnet18(weights=None, features_per_group=args.features_per_group).to(args.device)
     # create a projection head
-    vision_projection = ClipProjectionHead(out_dim=clip_dim).to(device)
-
+    vision_projection = ClipProjectionHead(out_dim=args.clip_dim).to(args.device)
     # get resnet models for each tactile
-    tactile_encoder = modified_resnet18(weights=None, features_per_group=features_per_group).to(device)
+    tactile_encoder = modified_resnet18(weights=None, features_per_group=args.features_per_group).to(args.device)
     # create a projection head
-    tactile_projection = ClipProjectionHead(out_dim=clip_dim).to(device)
+    tactile_projection = ClipProjectionHead(out_dim=args.clip_dim).to(args.device)
 
-    optim_params = [{"params": tactile_encoder.parameters(), "lr": resnet_lr},
-                    {"params": tactile_projection.parameters(), "lr": projection_lr},
-                    {"params": vision_encoder.parameters(), "lr": resnet_lr},
-                    {"params": vision_projection.parameters(), "lr": projection_lr},]
-
-    print('optim_params:', optim_params)
+    optim_params = [{"params": tactile_encoder.parameters(), "lr": args.resnet_lr},
+                    {"params": tactile_projection.parameters(), "lr": args.projection_lr},
+                    {"params": vision_encoder.parameters(), "lr": args.resnet_lr},
+                    {"params": vision_projection.parameters(), "lr": args.projection_lr},]
 
     optimizer = torch.optim.Adam(optim_params)
     
-    training_losses = np.empty([n_epochs, n_cameras])
-    testing_losses = np.empty([n_epochs, n_cameras])
+    training_losses = np.empty([args.n_epochs, n_cameras])
+    testing_losses = np.empty([args.n_epochs, n_cameras])
 
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, drop_last=False)
-    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, drop_last=False)
+    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, drop_last=False)
+    test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False, drop_last=False)
     
-    for epoch in tqdm(range(n_epochs)):
+    for epoch in tqdm(range(args.n_epochs)):
     # train the model
         training_loss = np.zeros(n_cameras)
 
@@ -323,7 +275,7 @@ def clip_pretraining(train_dataset,
         for batch_idx, batch in enumerate(train_loader):
             for k, v in batch.items():
                 if isinstance(v, torch.Tensor):
-                    batch[k] = v.to(device, non_blocking=True)
+                    batch[k] = v.to(args.device, non_blocking=True)
 
             camera_keys = [k for k in camera_keys if "cam_left_high" not in k]
             cam_tensors = [batch[k] for k in camera_keys] # n_cameras, C, H, W 
@@ -333,37 +285,40 @@ def clip_pretraining(train_dataset,
             tac_tensors = [batch[k] for k in tactile_keys]  
             tactiles = torch.stack(tac_tensors, dim=1) # 1, 1, 3, 32, 32
 
-            images = images.to(device)
-            tactiles = tactiles.to(device)
+            images = images.to(args.device)
+            tactiles = tactiles.to(args.device)
 
             B, n_cameras, C, H, W = images.shape
             images = images.view(-1, C, H, W)
             image_embeddings = vision_projection(vision_encoder(images))
-            image_embeddings = image_embeddings.view(B, n_cameras, clip_dim) # 1, 1, 512
+            image_embeddings = image_embeddings.view(B, n_cameras, args.clip_dim) # 1, 1, 512
 
             B, n_tactile, C, H, W = tactiles.shape
             tactiles = tactiles.view(-1, C, H, W)
             tactile_embeddings = tactile_projection(vision_encoder(tactiles))
-            tactile_embeddings = tactile_embeddings.view(B, n_tactile, clip_dim) # 1, 1, 512
+            tactile_embeddings = tactile_embeddings.view(B, n_tactile, args.clip_dim) # 1, 1, 512
 
             # calculate target matrix
             clip_N = n_cameras + n_tactile
-            target_matrix = torch.eye(clip_N).to(device)
+            target_matrix = torch.eye(clip_N).to(args.device)
 
-            if batch_idx == 0 and epoch%plot_freq == 0: # visualize the first batch in each epoch
+            if batch_idx == 0 and epoch%args.plot_freq == 0: # visualize the first batch in each epoch
                 loss, plot_maps = clip_loss(image_embeddings, tactile_embeddings, target_matrix, visualize=True)
-                '''
                 try:
-                    for cam_num, plot_map in enumerate(plot_maps):
-                        plt.figure()
-                        plt.imshow(plot_map)
+                    if args.wandb_enable:
+                        plt.imshow(plot_maps)
                         plt.colorbar()
-                        plt.title(f'Average Softmax Map, Epoch {epoch}, Cam {cam_num} - Train')
+                        buf = io.BytesIO()
+                        plt.savefig(buf, format="png")
+                        buf.seek(0)
                         plt.close()
+
+                        wandb.log({
+                            "train/similarity_matrix": wandb.Image(Image.open(buf)),
+                            "epoch": epoch
+                        })
                 except:
-                    print('Error in train plots')
                     raise
-                '''
             else:
                 loss, _ = clip_loss(image_embeddings, tactile_embeddings, target_matrix, visualize=False)
 
@@ -381,11 +336,16 @@ def clip_pretraining(train_dataset,
 
         test_loss = np.zeros(n_cameras)
 
+        topk_sums = {"top1_i2t": 0.0, "top5_i2t": 0.0, "top10_i2t": 0.0, "top1_t2i": 0.0, "top5_t2i": 0.0, "top10_t2i": 0.0,}
+        total_samples = 0
+        all_img_embeds = []
+        all_tac_embeds = []
+
         with torch.no_grad():
             for batch_idx, batch in enumerate(test_loader):
                 for k, v in batch.items():
                     if isinstance(v, torch.Tensor):
-                        batch[k] = v.to(device, non_blocking=True)
+                        batch[k] = v.to(args.device, non_blocking=True)
 
                 camera_keys = [k for k in camera_keys if "cam_left_high" not in k]
                 cam_tensors = [batch[k] for k in camera_keys] # n_cameras, C, H, W
@@ -395,143 +355,204 @@ def clip_pretraining(train_dataset,
                 tac_tensors = [batch[k] for k in tactile_keys]  
                 tactiles = torch.stack(tac_tensors, dim=1) # 1, 1, 3, 32, 32
 
-                images = images.to(device)
-                tactiles = tactiles.to(device)
+                images = images.to(args.device)
+                tactiles = tactiles.to(args.device)
 
                 B, n_cameras, C, H, W = images.shape
                 images = images.view(-1, C, H, W)
                 image_embeddings = vision_projection(vision_encoder(images))
-                image_embeddings = image_embeddings.view(B, n_cameras, clip_dim) # 1, 1, 512
+                image_embeddings = image_embeddings.view(B, n_cameras, args.clip_dim) # 1, 1, 512
 
                 B, n_tactile, C, H, W = tactiles.shape
                 tactiles = tactiles.view(-1, C, H, W)
                 tactile_embeddings = tactile_projection(vision_encoder(tactiles))
-                tactile_embeddings = tactile_embeddings.view(B, n_tactile, clip_dim) # 1, 1, 512
+                tactile_embeddings = tactile_embeddings.view(B, n_tactile, args.clip_dim) # 1, 1, 512
+
+                batch_topk = topk_metrics(image_embeddings.squeeze(1), tactile_embeddings.squeeze(1), ks=(1, 5, 10))
+                for k, v in batch_topk.items():
+                    topk_sums[k] += v * B
+                total_samples += B
+
+                all_img_embeds.append(image_embeddings.squeeze(1).detach().cpu().numpy())
+                all_tac_embeds.append(tactile_embeddings.squeeze(1).detach().cpu().numpy())
 
                 # calculate target matrix
-                target_matrix = torch.eye(clip_N).to(device)
+                target_matrix = torch.eye(clip_N).to(args.device)
 
                 # calculate loss - vector of per-camera losses
                             # calculate loss - vector of per-camera losses
-                if batch_idx == 0 and epoch%plot_freq == 0: # visualize the first batch in each epoch
+                if batch_idx == 0 and epoch%args.plot_freq == 0: # visualize the first batch in each epoch
                     loss, plot_maps = clip_loss(image_embeddings, tactile_embeddings, target_matrix, visualize=True)
-                    '''
                     try:
-                        for cam_num, plot_map in enumerate(plot_maps):
-                            plt.figure()
-                            plt.imshow(plot_map)
+                        if args.wandb_enable:
+                            plt.imshow(plot_maps)
                             plt.colorbar()
-                            plt.title(f'Average Softmax Map, Epoch {epoch}, Cam {cam_num} - Test')
-                            plt.savefig(f'{save_dir}/graphs/epoch_{epoch}_cam_{cam_num}_test.png')
+                            buf = io.BytesIO()
+                            plt.savefig(buf, format="png")
+                            buf.seek(0)
                             plt.close()
-                    except:
-                        print('Error in test plots')
-                        raise
-                    '''
 
+                            wandb.log({
+                                "test/similarity_matrix": wandb.Image(Image.open(buf)),
+                                "epoch": epoch
+                            })
+                    except:
+                        raise
                 else:
                     loss, _ = clip_loss(image_embeddings, tactile_embeddings, target_matrix, visualize=True)
                 test_loss += loss.clone().detach().cpu().numpy()
         testing_losses[epoch] = test_loss/len(test_loader)
+        
+        epoch_topk = {k: (v / total_samples) for k, v in topk_sums.items()}
+
+        if (epoch + 1) >= 10 and ((epoch + 1) % 10 == 0):
+        #if epoch >= 0:
+            try:
+                if len(all_img_embeds) == 0 or len(all_tac_embeds) == 0:
+                    logging.warning("No embeddings for t-SNE, skipping.")
+                else:
+                    img_arr = np.concatenate(all_img_embeds, axis=0)
+                    tac_arr = np.concatenate(all_tac_embeds, axis=0)
+
+                    emb = np.concatenate([img_arr, tac_arr], axis=0)
+                    labels = np.array([0] * len(img_arr) + [1] * len(tac_arr))
+
+                    tsne = TSNE(
+                        n_components=2,
+                        init="random",
+                        perplexity=30,
+                        learning_rate="auto",
+                    )
+                    emb_2d = tsne.fit_transform(emb)
+
+                    plt.figure(figsize=(6, 6))
+                    plt.scatter(
+                        emb_2d[labels == 0, 0], emb_2d[labels == 0, 1],
+                        s=5, label="image", alpha=0.6
+                    )
+                    plt.scatter(
+                        emb_2d[labels == 1, 0], emb_2d[labels == 1, 1],
+                        s=5, label="tactile", alpha=0.6
+                    )
+                    plt.legend()
+                    plt.title(f"t-SNE (epoch {epoch+1})")
+
+                    # 👉 메모리 버퍼에 저장
+                    buf = io.BytesIO()
+                    plt.savefig(buf, format="png", bbox_inches="tight")
+                    buf.seek(0)
+                    plt.close()
+
+                    if args.wandb_enable:
+                        tsne_img = Image.open(buf)          # 🔹 BytesIO → PIL.Image
+                        wandb.log({
+                            "tsne/test_embeddings": wandb.Image(tsne_img),
+                            "epoch": epoch,
+                        })
+            except Exception as e:
+                logging.warning(f"t-SNE plotting failed at epoch {epoch+1}: {e}")
+
+
 
         # Log metrics to W&B
-        wandb.log({
-            "train/loss": training_losses[epoch].mean(),
-            "test/loss": testing_losses[epoch].mean(),
-            "epoch": epoch
-        })
-
-        # plot the training and testing losses
-        if epoch % plot_freq == 0:
-            plt.figure(figsize=(10, 6))
-            for i in range(n_cameras):
-                plt.plot(training_losses[:epoch+1, i], label=f'camera {i+1} train', c=f'C{i}')
-                plt.plot(testing_losses[:epoch+1, i], label=f'camera {i+1} test', linestyle='dashed', c=f'C{i}')
-            plt.legend(loc='best')
-            plt.title(f'Training and Testing Loss - Epoch {epoch+1}/{n_epochs}')
-            plt.xlabel('Epoch')
-            plt.ylabel('Loss')
-            plt.savefig(f'{save_dir}/graphs/training_loss.png')
-            
-            # Log plot to W&B
-            wandb.log({"training_loss_plot": wandb.Image(f'{save_dir}/graphs/training_loss.png')})
-            plt.close()
-
-        # save the losses as a np file
-        np.save(f'{save_dir}/graphs/training_losses.npy', training_losses)
-        np.save(f'{save_dir}/graphs/testing_losses.npy', testing_losses)
+        if args.wandb_enable:
+            log_dict = {
+                "train/loss": training_losses[epoch].mean(),
+                "test/loss": testing_losses[epoch].mean(),
+                "epoch": epoch,
+            }
+            log_dict.update({
+                "test/top1: image to tactile": epoch_topk["top1_i2t"],
+                "test/top5: image to tactile": epoch_topk["top5_i2t"],
+                "test/top10: image to tactile": epoch_topk["top10_i2t"],
+                "test/top1: tactile to image": epoch_topk["top1_t2i"],
+                "test/top5: tactile to image": epoch_topk["top5_t2i"],
+                "test/top10: tactile to image": epoch_topk["top10_t2i"],
+            })
+            wandb.log(log_dict)
 
         # save the models
-        if (epoch+1) % save_freq == 0:
+        if (epoch+1) % args.save_freq == 0:
             torch.save(vision_encoder.state_dict(), f'{save_dir}/epoch_{epoch}_vision_encoder.pth')
             torch.save(vision_projection.state_dict(), f'{save_dir}/epoch_{epoch}_vision_projection.pth')
             torch.save(tactile_encoder.state_dict(), f'{save_dir}/epoch_{epoch}_tactile_encoder.pth')
             torch.save(tactile_projection.state_dict(), f'{save_dir}/epoch_{epoch}_tactile_projection.pth')
 
-def run_clip_pretraining():
-    wandb.init(
-        project="clip-pretraining",
-        name=None,
-        config={
-            "n_epochs": 100,
-            "batch_size": 4,
-            "clip_dim": 512,
-            "features_per_group": 16,
-            "resnet_lr": 1e-5,
-            "projection_lr": 1e-4,
-            "plot_freq": 10,
-            "save_freq": 100,
-        }
-    )
+def run_clip_pretraining(args):
+    if args.wandb_enable:
+        wandb.init(
+            project=args.wandb_project,
+            entity=args.wandb_entity,
+            name=args.wandb_name,
+            config={
+                "train_dataset": args.train_dataset_id,
+                "test_dataset": args.test_dataset_id,
+                "n_epochs": args.n_epochs,
+                "batch_size": args.batch_size,
+                "clip_dim": args.clip_dim,
+                "features_per_group": args.features_per_group,
+                "resnet_lr": args.resnet_lr,
+                "projection_lr": args.projection_lr,
+                "plot_freq": args.plot_freq,
+                "save_freq": args.save_freq,
+                "device": args.device,
+            }
+        )
 
     start_time = time.time()
-    save_dir = "data/clip_models/"
-    os.makedirs(save_dir, exist_ok=True)
+    os.makedirs(args.save_dir, exist_ok=True)
 
-    # Define train and test dataset IDs from HuggingFace
-    train_dataset_id = "eunjuri/towel_strong_train_full"
-    test_dataset_id = "eunjuri/towel_strong_test_full"
-
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    train_dataset = LeRobotDataset(repo_id=train_dataset_id)
-    test_dataset  = LeRobotDataset(repo_id=test_dataset_id)
+    train_dataset = LeRobotDataset(repo_id=args.train_dataset_id)
+    test_dataset  = LeRobotDataset(repo_id=args.test_dataset_id)
 
     # create directory to save models and plots
     # get all folders in the clip_models directory
     ns = [-1]
-    for folder in os.listdir(save_dir):
+    for folder in os.listdir(args.save_dir):
         ns.append(int(folder))
 
     n = max(ns) + 1
-    os.makedirs(f'{save_dir}/{n}')
-    os.makedirs(f'{save_dir}/{n}/graphs')
+    os.makedirs(f'{args.save_dir}/{n}')
+    os.makedirs(f'{args.save_dir}/{n}/graphs')
 
     # save run stats:
-    with open(f'{save_dir}/{n}/run_stats.txt', 'w') as f:
+    with open(f'{args.save_dir}/{n}/run_stats.txt', 'w') as f:
         f.write(f'train_dataset: {train_dataset}\n')
         f.write(f'test_dataset: {test_dataset}\n')
 
-    wandb.config.update({"save_dir": f'{save_dir}/{n}'})
-
-    clip_pretraining(train_dataset, test_dataset, device, save_dir=f'{save_dir}/{n}', clip_dim=512, features_per_group=16, n_epochs=100)
+    clip_pretraining(train_dataset, test_dataset, save_dir=f'{args.save_dir}/{n}', args=args)
     
     elapsed_time = time.time() - start_time
     minutes = int(elapsed_time // 60)
     seconds = int(elapsed_time % 60)
-    
-    logging.info("CLIP pretraining completed successfully!")
-    logging.info(f"Models saved to: {save_dir}/{n}/")
-    logging.info(f"Total training time: {minutes}m {seconds}s")
+    logging.warning(f"Total training time: {minutes}m {seconds}s")
 
-    wandb.log({
-        "total_training_time_minutes": minutes,
-        "total_training_time_seconds": seconds,
-        "save_directory": f'{save_dir}/{n}'
-    })
-
-    wandb.finish()
+    if args.wandb_enable:
+        wandb.finish()
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--train_dataset_id', type = str, default = 'eunjuri/towel_strong_train_full', help='HuggingFace train dataset repository ID')
+    parser.add_argument('--test_dataset_id', type = str, default = 'eunjuri/towel_strong_test_full', help='HuggingFace test dataset repository ID')
+
+    # model parameters
+    parser.add_argument('--n_epochs', type=int, default=100, help='Number of training epochs')
+    parser.add_argument('--batch_size', type=int, default=16, help='Batch size for training')
+    parser.add_argument('--clip_dim', type=int, default=512, help='Dimension of CLIP projection head')
+    parser.add_argument('--features_per_group', type=int, default=16, help='Number of features per group in projection head')
+    parser.add_argument('--resnet_lr', type=float, default=1e-5, help='Learning rate for the ResNet backbone')
+    parser.add_argument('--projection_lr', type=float, default=1e-4, help='Learning rate for the projection head')
+    parser.add_argument('--plot_freq', type=int, default=1, help='Frequency (in epochs) of similarity plot logging')
+    parser.add_argument('--save_freq', type=int, default=100, help='Frequency (in epochs) of saving checkpoints')
+
+    parser.add_argument('--save_dir', type=str, default='data/clip_models/', help='Directory to save trained CLIP models')
+    parser.add_argument('--device', type=str, default='cuda', choices=['cuda', 'cpu'], help='Device to run training on')
+
+    parser.add_argument('--wandb_enable', type=bool, default=True, help='Enable or disable WandB logging')
+    parser.add_argument('--wandb_project', type=str, default='clip-pretraining', help='WandB project name')
+    parser.add_argument('--wandb_entity', type=str, default='cilab-robot', help='WandB entity name')
+    parser.add_argument('--wandb_name', type=str, default='test', help='WandB run name')
+    args = parser.parse_args()
+
     init_logging()
-    run_clip_pretraining()
+    run_clip_pretraining(args)
