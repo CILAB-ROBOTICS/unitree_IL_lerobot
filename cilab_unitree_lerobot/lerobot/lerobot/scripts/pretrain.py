@@ -399,7 +399,7 @@ def clip_pretraining(train_dataset, test_dataset, save_dir: str, args):
                     num_datasets = len(dataset_names)
                     colors = plt.cm.tab10(np.linspace(0, 1, num_datasets))
                     
-                    plt.figure(figsize=(10, 8))
+                    plt.figure(figsize=(8, 8))
                     
                     # Plot each combination of modality and dataset
                     for dataset_idx in range(num_datasets):
@@ -414,7 +414,7 @@ def clip_pretraining(train_dataset, test_dataset, save_dir: str, args):
                                     color = color * 0.7
                                 plt.scatter(emb_2d[mask, 0], emb_2d[mask, 1], s=5, label=label, alpha=0.6, color=color)
                     
-                    plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=8)
+                    plt.legend(loc='upper right', fontsize=8)
                     buf = io.BytesIO()
                     plt.savefig(buf, format="png", bbox_inches="tight")
                     buf.seek(0)
@@ -530,7 +530,7 @@ if __name__ == "__main__":
     parser.add_argument('--plot_freq', type=int, default=1, help='Frequency (in epochs) of similarity plot logging')
     parser.add_argument('--save_freq', type=int, default=100, help='Frequency (in epochs) of saving checkpoints')
 
-    parser.add_argument('--save_dir', type=str, default='data/clip_models/', help='Directory to save trained CLIP models')
+    parser.add_argument('--save_dir', type=str, default='/workspace/clip_pretrain/clip_models/', help='Directory to save trained CLIP models')
     parser.add_argument('--device', type=str, default='cuda', choices=['cuda', 'cpu'], help='Device to run training on')
 
     parser.add_argument('--wandb_enable', type=bool, default=False, help='Enable or disable WandB logging')
