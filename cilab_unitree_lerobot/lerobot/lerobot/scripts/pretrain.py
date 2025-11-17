@@ -396,10 +396,9 @@ def clip_pretraining(train_dataset, test_dataset, save_dir: str, args):
                         learning_rate="auto",
                     )
                     emb_2d = tsne.fit_transform(emb)
-
                     plt.figure(figsize=(6, 6))
-                    plt.scatter(emb_2d[labels == 0, 0], emb_2d[labels == 0, 1], s=5, label="image", alpha=0.6)
-                    plt.scatter(emb_2d[labels == 1, 0], emb_2d[labels == 1, 1], s=5, label="tactile", alpha=0.6)
+                    plt.scatter(emb_2d[labels == 0, 0], emb_2d[labels == 0, 1], s=5, label="image", alpha=0.6, color="purple")
+                    plt.scatter(emb_2d[labels == 1, 0], emb_2d[labels == 1, 1], s=5, label="tactile", alpha=0.6, color="pink")
                     plt.legend()
                     buf = io.BytesIO()
                     plt.savefig(buf, format="png", bbox_inches="tight")
@@ -492,7 +491,7 @@ if __name__ == "__main__":
     parser.add_argument('--test_dataset_id', type = str, default = 'eunjuri/towel_strong_test_full', help='HuggingFace test dataset repository ID')
 
     # model parameters
-    parser.add_argument('--n_epochs', type=int, default=100, help='Number of training epochs')
+    parser.add_argument('--n_epochs', type=int, default=2, help='Number of training epochs')
     parser.add_argument('--batch_size', type=int, default=16, help='Batch size for training')
     parser.add_argument('--clip_dim', type=int, default=512, help='Dimension of CLIP projection head')
     parser.add_argument('--features_per_group', type=int, default=16, help='Number of features per group in projection head')
@@ -504,7 +503,7 @@ if __name__ == "__main__":
     parser.add_argument('--save_dir', type=str, default='data/clip_models/', help='Directory to save trained CLIP models')
     parser.add_argument('--device', type=str, default='cuda', choices=['cuda', 'cpu'], help='Device to run training on')
 
-    parser.add_argument('--wandb_enable', type=bool, default=True, help='Enable or disable WandB logging')
+    parser.add_argument('--wandb_enable', type=bool, default=False, help='Enable or disable WandB logging')
     parser.add_argument('--wandb_project', type=str, default='clip-pretraining', help='WandB project name')
     parser.add_argument('--wandb_entity', type=str, default='cilab-robot', help='WandB entity name')
     parser.add_argument('--wandb_name', type=str, default='test', help='WandB run name')
