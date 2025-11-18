@@ -13,6 +13,7 @@ import torchvision
 import wandb
 from PIL import Image
 from matplotlib import pyplot as plt
+from matplotlib.lines import Line2D
 from sklearn.manifold import TSNE
 from torch import nn
 from torch.utils.data import DataLoader
@@ -286,11 +287,13 @@ def clip_pretraining(train_dataset, test_dataset, save_dir: str, args):
 
         topk_sums = defaultdict(float)
         total_samples = 0
-        all_img_embeds = []  # Will store embeddings per camera view
-        all_img_camera_indices = []  # Track which camera each embedding belongs to
-        all_tac_embeds = []
-        all_img_dataset_indices = []
-        all_tac_dataset_indices = []
+        all_embeddings = []
+        all_time_ids = []
+        all_modality_labels = []
+        time_key_to_id = {}
+        time_id_to_pair = {}
+        next_time_id = 0
+        sample_counter = 0
 
         # Get dataset names for labeling
         if isinstance(test_dataset, MultiLeRobotDataset):
@@ -325,9 +328,25 @@ def clip_pretraining(train_dataset, test_dataset, save_dir: str, args):
                 
                 # Extract dataset_index if available (for MultiLeRobotDataset)
                 if "dataset_index" in batch:
-                    dataset_indices = batch["dataset_index"].cpu().numpy()
+                    dataset_indices = batch["dataset_index"].detach().cpu().numpy()
                 else:
                     dataset_indices = np.zeros(B, dtype=np.int32)
+                if "frame_index" in batch:
+                    frame_indices = batch["frame_index"].detach().view(-1).cpu().numpy().astype(np.int64)
+                else:
+                    frame_indices = np.arange(sample_counter, sample_counter + B, dtype=np.int64)
+                if "episode_index" in batch:
+                    episode_indices = batch["episode_index"].detach().view(-1).cpu().numpy().astype(np.int64)
+                else:
+                    episode_indices = np.zeros(B, dtype=np.int64)
+                time_ids = np.empty(B, dtype=np.int64)
+                for idx_item, (ep_idx, frame_idx) in enumerate(zip(episode_indices, frame_indices)):
+                    key = (int(ep_idx), int(frame_idx))
+                    if key not in time_key_to_id:
+                        time_key_to_id[key] = next_time_id
+                        time_id_to_pair[next_time_id] = key
+                        next_time_id += 1
+                    time_ids[idx_item] = time_key_to_id[key]
                 images = images.view(-1, C, H, W)
                 image_embeddings = vision_projection(vision_encoder(images))
                 image_embeddings = image_embeddings.view(B, n_cameras, args.clip_dim) # 1, 1, 512
@@ -341,16 +360,21 @@ def clip_pretraining(train_dataset, test_dataset, save_dir: str, args):
                 for k, v in batch_topk.items():
                     topk_sums[k] += v * B
                 total_samples += B
+                sample_counter += B
 
-                # Store embeddings per camera view
-                image_embeddings_np = image_embeddings.detach().cpu().numpy()  # (B, n_cameras, clip_dim)
-                for cam_idx in range(n_cameras):
-                    all_img_embeds.append(image_embeddings_np[:, cam_idx, :])  # (B, clip_dim)
-                    all_img_camera_indices.append(np.full(B, cam_idx, dtype=np.int32))
-                    all_img_dataset_indices.append(dataset_indices)
-                
-                all_tac_embeds.append(tactile_embeddings.squeeze(1).detach().cpu().numpy())
-                all_tac_dataset_indices.append(dataset_indices)
+                # Store embeddings for t-SNE visualization (grouped by time step)
+                image_embeddings_np = image_embeddings.detach().cpu().numpy().reshape(B * n_cameras, args.clip_dim)
+                tactile_embeddings_np = tactile_embeddings.detach().cpu().numpy().reshape(B * n_tactile, args.clip_dim)
+                img_time_ids = np.repeat(time_ids, n_cameras)
+                tac_time_ids = np.repeat(time_ids, n_tactile)
+
+                all_embeddings.append(image_embeddings_np)
+                all_time_ids.append(img_time_ids)
+                all_modality_labels.append(np.zeros_like(img_time_ids))
+
+                all_embeddings.append(tactile_embeddings_np)
+                all_time_ids.append(tac_time_ids)
+                all_modality_labels.append(np.ones_like(tac_time_ids))
 
                 clip_N = n_cameras + n_tactile
                 target_matrix = torch.eye(clip_N).to(args.device)
@@ -383,63 +407,93 @@ def clip_pretraining(train_dataset, test_dataset, save_dir: str, args):
         #if (epoch + 1) >= 10 and ((epoch + 1) % 10 == 0):
         if epoch >= 0:
             try:
-                if len(all_img_embeds) == 0 or len(all_tac_embeds) == 0:
+                if len(all_embeddings) == 0:
                     logging.warning("No embeddings for t-SNE, skipping.")
                 else:
-                    img_arr = np.concatenate(all_img_embeds, axis=0)
-                    tac_arr = np.concatenate(all_tac_embeds, axis=0)
-                    img_camera_indices = np.concatenate(all_img_camera_indices, axis=0)
-                    img_dataset_indices = np.concatenate(all_img_dataset_indices, axis=0)
-                    tac_dataset_indices = np.concatenate(all_tac_dataset_indices, axis=0)
+                    emb = np.concatenate(all_embeddings, axis=0)
+                    time_labels = np.concatenate(all_time_ids, axis=0)
+                    modality_labels = np.concatenate(all_modality_labels, axis=0)
 
-                    emb = np.concatenate([img_arr, tac_arr], axis=0)
-                    # Get number of test cameras
-                    test_n_cameras = len(test_camera_keys)
-                    # Create view labels: 0 to test_n_cameras-1 for camera views, test_n_cameras for tactile
-                    view_labels = np.concatenate([img_camera_indices, np.full(len(tac_arr), test_n_cameras, dtype=np.int32)])
-                    dataset_labels = np.concatenate([img_dataset_indices, tac_dataset_indices], axis=0)
+                    unique_time_ids = np.unique(time_labels)
+                    if unique_time_ids.size == 0:
+                        logging.warning("No time labels for t-SNE, skipping.")
+                    else:
+                        rng = np.random.default_rng(args.tsne_seed)
+                        num_time_samples = min(args.tsne_time_samples, unique_time_ids.size)
+                        sampled_time_ids = rng.choice(unique_time_ids, size=num_time_samples, replace=False)
 
-                    tsne = TSNE(
-                        n_components=2,
-                        init="random",
-                        perplexity=30,
-                        learning_rate="auto",
-                    )
-                    emb_2d = tsne.fit_transform(emb)
-                    
-                    # Create color map for views (cameras + tactile)
-                    num_views = test_n_cameras + 1  # test_n_cameras + tactile
-                    colors = plt.cm.tab10(np.linspace(0, 1, num_views))
-                    
-                    plt.figure(figsize=(12, 8))
-                    
-                    # Get camera names for labeling
-                    camera_names = [k.split('.')[-1] if '.' in k else k for k in test_camera_keys]
-                    
-                    # Plot each view (camera or tactile)
-                    for view_idx in range(num_views):
-                        view_mask = (view_labels == view_idx)
-                        if np.any(view_mask):
-                            if view_idx < test_n_cameras:
-                                view_name = camera_names[view_idx]
-                            else:
-                                view_name = "tactile"
-                            
-                            plt.scatter(emb_2d[view_mask, 0], emb_2d[view_mask, 1], 
-                                      s=5, label=view_name, alpha=0.6, color=colors[view_idx])
-                    
-                    plt.legend(loc='upper right', fontsize=8)
-                    plt.title("t-SNE Visualization by Camera View")
-                    buf = io.BytesIO()
-                    plt.savefig(buf, format="png", bbox_inches="tight")
-                    buf.seek(0)
-                    plt.close()
-                    if args.wandb_enable:
-                        tsne_img = Image.open(buf) 
-                        wandb.log({
-                            "tsne/test_embeddings": wandb.Image(tsne_img),
-                            "epoch": epoch,
-                        })
+                        mask = np.isin(time_labels, sampled_time_ids)
+                        emb = emb[mask]
+                        time_labels = time_labels[mask]
+                        modality_labels = modality_labels[mask]
+
+                        if emb.shape[0] < 2:
+                            logging.warning("Not enough sampled embeddings for t-SNE, skipping.")
+                        else:
+                            tsne = TSNE(
+                                n_components=2,
+                                init="random",
+                                perplexity=30,
+                                learning_rate="auto",
+                            )
+                            emb_2d = tsne.fit_transform(emb)
+
+                            plt.figure(figsize=(12, 8))
+                            color_palette = plt.cm.tab20(np.linspace(0, 1, len(sampled_time_ids)))
+                            time_handles = []
+
+                            for idx_time, time_id in enumerate(sampled_time_ids):
+                                color = color_palette[idx_time % len(color_palette)]
+                                time_mask = time_labels == time_id
+                                if not np.any(time_mask):
+                                    continue
+                                ep_idx, frame_idx = time_id_to_pair.get(int(time_id), (None, None))
+                                time_label = (
+                                    f"ep{ep_idx}_frame{frame_idx}" if ep_idx is not None else f"time_{time_id}"
+                                )
+
+                                image_mask = time_mask & (modality_labels == 0)
+                                if np.any(image_mask):
+                                    plt.scatter(
+                                        emb_2d[image_mask, 0],
+                                        emb_2d[image_mask, 1],
+                                        s=8,
+                                        label=None,
+                                        alpha=0.7,
+                                        color=color,
+                                        marker="o",
+                                    )
+                                tactile_mask = time_mask & (modality_labels == 1)
+                                if np.any(tactile_mask):
+                                    plt.scatter(
+                                        emb_2d[tactile_mask, 0],
+                                        emb_2d[tactile_mask, 1],
+                                        s=12,
+                                        label=None,
+                                        alpha=0.9,
+                                        color=color,
+                                        marker="x",
+                                    )
+
+                                time_handles.append(Line2D([], [], marker="o", linestyle="", color=color, label=time_label))
+
+                            modality_handles = [
+                                Line2D([], [], marker="o", linestyle="", color="black", label="image"),
+                                Line2D([], [], marker="x", linestyle="", color="black", label="tactile"),
+                            ]
+
+                            plt.legend(time_handles + modality_handles, loc="upper right", fontsize=7)
+                            plt.title("t-SNE Visualization (sampled time steps)")
+                            buf = io.BytesIO()
+                            plt.savefig(buf, format="png", bbox_inches="tight")
+                            buf.seek(0)
+                            plt.close()
+                            if args.wandb_enable:
+                                tsne_img = Image.open(buf)
+                                wandb.log({
+                                    "tsne/test_embeddings": wandb.Image(tsne_img),
+                                    "epoch": epoch,
+                                })
             except Exception as e:
                 logging.warning(f"t-SNE plotting failed at epoch {epoch+1}: {e}")
 
@@ -547,6 +601,8 @@ if __name__ == "__main__":
     parser.add_argument('--projection_lr', type=float, default=1e-4, help='Learning rate for the projection head')
     parser.add_argument('--plot_freq', type=int, default=1, help='Frequency (in epochs) of similarity plot logging')
     parser.add_argument('--save_freq', type=int, default=100, help='Frequency (in epochs) of saving checkpoints')
+    parser.add_argument('--tsne_time_samples', type=int, default=20, help='Number of unique time steps to visualize in t-SNE')
+    parser.add_argument('--tsne_seed', type=int, default=42, help='Random seed used for t-SNE time sampling')
 
     parser.add_argument('--save_dir', type=str, default='/workspace/clip_pretrain/clip_models/', help='Directory to save trained CLIP models')
     parser.add_argument('--device', type=str, default='cuda', choices=['cuda', 'cpu'], help='Device to run training on')
