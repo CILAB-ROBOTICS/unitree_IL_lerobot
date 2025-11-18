@@ -286,7 +286,8 @@ def clip_pretraining(train_dataset, test_dataset, save_dir: str, args):
 
         topk_sums = defaultdict(float)
         total_samples = 0
-        all_img_embeds = []
+        all_img_embeds = []  # Will store embeddings per camera view
+        all_img_camera_indices = []  # Track which camera each embedding belongs to
         all_tac_embeds = []
         all_img_dataset_indices = []
         all_tac_dataset_indices = []
@@ -297,12 +298,14 @@ def clip_pretraining(train_dataset, test_dataset, save_dir: str, args):
         else:
             dataset_names = [test_dataset.repo_id]
 
+        # Get test camera keys (needed for t-SNE visualization)
+        test_features = test_dataset.meta.features
+        test_camera_keys = [k for k in test_features if k.startswith("observation.images.") and "tactile" not in k and not k.endswith("carpet_0")]
+        test_tactile_keys = [k for k in test_features if k.startswith("observation.images.") and "tactile" in k or k.endswith("carpet_0")]
+        test_camera_keys = [k for k in test_camera_keys if "cam_left_high" not in k]
+        test_tactile_keys = [k for k in test_tactile_keys if "carpet_0" in k]
+
         with torch.no_grad():
-            test_features = test_dataset.meta.features
-            test_camera_keys = [k for k in test_features if k.startswith("observation.images.") and "tactile" not in k and not k.endswith("carpet_0")]
-            test_tactile_keys = [k for k in test_features if k.startswith("observation.images.") and "tactile" in k or k.endswith("carpet_0")]
-            test_camera_keys = [k for k in test_camera_keys if "cam_left_high" not in k]
-            test_tactile_keys = [k for k in test_tactile_keys if "carpet_0" in k]
             
             for batch_idx, batch in enumerate(test_loader):
                 for k, v in batch.items():
@@ -339,9 +342,14 @@ def clip_pretraining(train_dataset, test_dataset, save_dir: str, args):
                     topk_sums[k] += v * B
                 total_samples += B
 
-                all_img_embeds.append(image_embeddings.squeeze(1).detach().cpu().numpy())
+                # Store embeddings per camera view
+                image_embeddings_np = image_embeddings.detach().cpu().numpy()  # (B, n_cameras, clip_dim)
+                for cam_idx in range(n_cameras):
+                    all_img_embeds.append(image_embeddings_np[:, cam_idx, :])  # (B, clip_dim)
+                    all_img_camera_indices.append(np.full(B, cam_idx, dtype=np.int32))
+                    all_img_dataset_indices.append(dataset_indices)
+                
                 all_tac_embeds.append(tactile_embeddings.squeeze(1).detach().cpu().numpy())
-                all_img_dataset_indices.append(dataset_indices)
                 all_tac_dataset_indices.append(dataset_indices)
 
                 clip_N = n_cameras + n_tactile
@@ -380,11 +388,15 @@ def clip_pretraining(train_dataset, test_dataset, save_dir: str, args):
                 else:
                     img_arr = np.concatenate(all_img_embeds, axis=0)
                     tac_arr = np.concatenate(all_tac_embeds, axis=0)
+                    img_camera_indices = np.concatenate(all_img_camera_indices, axis=0)
                     img_dataset_indices = np.concatenate(all_img_dataset_indices, axis=0)
                     tac_dataset_indices = np.concatenate(all_tac_dataset_indices, axis=0)
 
                     emb = np.concatenate([img_arr, tac_arr], axis=0)
-                    modality_labels = np.array([0] * len(img_arr) + [1] * len(tac_arr))  # 0=image, 1=tactile
+                    # Get number of test cameras
+                    test_n_cameras = len(test_camera_keys)
+                    # Create view labels: 0 to test_n_cameras-1 for camera views, test_n_cameras for tactile
+                    view_labels = np.concatenate([img_camera_indices, np.full(len(tac_arr), test_n_cameras, dtype=np.int32)])
                     dataset_labels = np.concatenate([img_dataset_indices, tac_dataset_indices], axis=0)
 
                     tsne = TSNE(
@@ -395,26 +407,29 @@ def clip_pretraining(train_dataset, test_dataset, save_dir: str, args):
                     )
                     emb_2d = tsne.fit_transform(emb)
                     
-                    # Create color map for datasets
-                    num_datasets = len(dataset_names)
-                    colors = plt.cm.tab10(np.linspace(0, 1, num_datasets))
+                    # Create color map for views (cameras + tactile)
+                    num_views = test_n_cameras + 1  # test_n_cameras + tactile
+                    colors = plt.cm.tab10(np.linspace(0, 1, num_views))
                     
-                    plt.figure(figsize=(8, 8))
+                    plt.figure(figsize=(12, 8))
                     
-                    # Plot each combination of modality and dataset
-                    for dataset_idx in range(num_datasets):
-                        for modality_idx, modality_name in enumerate(["image", "tactile"]):
-                            mask = (dataset_labels == dataset_idx) & (modality_labels == modality_idx)
-                            if np.any(mask):
-                                dataset_name = dataset_names[dataset_idx].split('/')[-1]  # Get short name
-                                label = f"{dataset_name}_{modality_name}"
-                                color = colors[dataset_idx]
-                                # Make tactile slightly darker
-                                if modality_idx == 1:
-                                    color = color * 0.7
-                                plt.scatter(emb_2d[mask, 0], emb_2d[mask, 1], s=5, label=label, alpha=0.6, color=color)
+                    # Get camera names for labeling
+                    camera_names = [k.split('.')[-1] if '.' in k else k for k in test_camera_keys]
+                    
+                    # Plot each view (camera or tactile)
+                    for view_idx in range(num_views):
+                        view_mask = (view_labels == view_idx)
+                        if np.any(view_mask):
+                            if view_idx < test_n_cameras:
+                                view_name = camera_names[view_idx]
+                            else:
+                                view_name = "tactile"
+                            
+                            plt.scatter(emb_2d[view_mask, 0], emb_2d[view_mask, 1], 
+                                      s=5, label=view_name, alpha=0.6, color=colors[view_idx])
                     
                     plt.legend(loc='upper right', fontsize=8)
+                    plt.title("t-SNE Visualization by Camera View")
                     buf = io.BytesIO()
                     plt.savefig(buf, format="png", bbox_inches="tight")
                     buf.seek(0)
