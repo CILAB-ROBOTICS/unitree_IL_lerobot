@@ -17,6 +17,7 @@ from matplotlib.lines import Line2D
 from sklearn.manifold import TSNE
 from torch import nn
 from torch.utils.data import DataLoader
+from torch.utils.data import ConcatDataset
 from tqdm import tqdm
 
 import matplotlib
@@ -184,12 +185,12 @@ def clip_loss(image_embeddings:torch.Tensor, tactile_embeddings:torch.Tensor, ta
 
     return loss, visualizations
 
-def clip_pretraining(train_dataset, test_dataset, save_dir: str, args):
+def clip_pretraining(train_dataset, test_dataset, train_features, save_dir: str, args):
     if save_dir[-1] == '/':
         save_dir = save_dir[:-1]
     run_name = os.path.basename(save_dir)
 
-    features = train_dataset.features
+    features = train_features
     camera_keys = [k for k in features if k.startswith("observation.images.") and "tactile" not in k and not k.endswith("carpet_0")]
     tactile_keys = [k for k in features if k.startswith("observation.images.") and "tactile" in k or k.endswith("carpet_0")]
 
@@ -296,10 +297,10 @@ def clip_pretraining(train_dataset, test_dataset, save_dir: str, args):
         sample_counter = 0
 
         # Get dataset names for labeling
-        if isinstance(test_dataset, MultiLeRobotDataset):
-            dataset_names = test_dataset.repo_ids
-        else:
-            dataset_names = [test_dataset.repo_id]
+        #if isinstance(test_dataset, MultiLeRobotDataset):
+        #    dataset_names = test_dataset.repo_ids
+        #else:
+        #    dataset_names = [test_dataset.repo_id]
 
         # Get test camera keys (needed for t-SNE visualization)
         test_features = test_dataset.meta.features
@@ -482,8 +483,8 @@ def clip_pretraining(train_dataset, test_dataset, save_dir: str, args):
                                 Line2D([], [], marker="x", linestyle="", color="black", label="tactile"),
                             ]
 
-                            plt.legend(time_handles + modality_handles, loc="upper right", fontsize=7)
-                            plt.title("t-SNE Visualization (sampled time steps)")
+                            handles, labels = plt.gca().get_legend_handles_labels()
+                            plt.legend(handles, labels, loc='upper right', fontsize=8)
                             buf = io.BytesIO()
                             plt.savefig(buf, format="png", bbox_inches="tight")
                             buf.seek(0)
@@ -553,15 +554,19 @@ def run_clip_pretraining(args):
 
     if len(train_dataset_ids) == 1:
         train_dataset = LeRobotDataset(repo_id=train_dataset_ids[0])
+        train_features = train_dataset.features
     else:
-        logging.warning(f"Combining {len(train_dataset_ids)} train datasets: {train_dataset_ids}")
-        train_dataset = MultiLeRobotDataset(repo_ids=train_dataset_ids)
+        dataset_list = [LeRobotDataset(repo_id=d) for d in train_dataset_ids]
+        train_dataset = ConcatDataset(dataset_list)
+        train_features = dataset_list[0].features
 
     if len(test_dataset_ids) == 1:
         test_dataset = LeRobotDataset(repo_id=test_dataset_ids[0])
+        test_features = test_dataset.features
     else:
-        logging.warning(f"Combining {len(test_dataset_ids)} test datasets: {test_dataset_ids}")
-        test_dataset = MultiLeRobotDataset(repo_ids=test_dataset_ids)
+        dataset_list = [LeRobotDataset(repo_id=d) for d in test_dataset_ids]
+        test_dataset = ConcatDataset(dataset_list)
+        test_features = dataset_list[0].features
 
     desired_dir = os.path.join(args.save_dir, run_name)
     save_run_dir = desired_dir
@@ -576,8 +581,10 @@ def run_clip_pretraining(args):
         f.write(f'train_dataset: {train_dataset}\n')
         f.write(f'test_datasets: {test_dataset_ids}\n')
         f.write(f'test_dataset: {test_dataset}\n')
+        f.write(f'trian_features: {train_features}\n')
+        f.write(f'test_features: {test_features}\n')
 
-    clip_pretraining(train_dataset, test_dataset, save_dir=save_run_dir, args=args)
+    clip_pretraining(train_dataset, test_dataset, train_features, save_dir=save_run_dir, args=args)
     
     elapsed_time = time.time() - start_time
     minutes = int(elapsed_time // 60)
@@ -595,7 +602,7 @@ if __name__ == "__main__":
     # model parameters
     parser.add_argument('--n_epochs', type=int, default=2, help='Number of training epochs')
     parser.add_argument('--batch_size', type=int, default=16, help='Batch size for training')
-    parser.add_argument('--clip_dim', type=int, default=512, help='Dimension of CLIP projection head')
+    parser.add_argument('--clip_dim', type=int, default=256, help='Dimension of CLIP projection head')
     parser.add_argument('--features_per_group', type=int, default=16, help='Number of features per group in projection head')
     parser.add_argument('--resnet_lr', type=float, default=1e-5, help='Learning rate for the ResNet backbone')
     parser.add_argument('--projection_lr', type=float, default=1e-4, help='Learning rate for the projection head')
