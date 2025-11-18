@@ -188,16 +188,15 @@ def clip_pretraining(train_dataset, test_dataset, save_dir: str, args):
         save_dir = save_dir[:-1]
     run_name = os.path.basename(save_dir)
 
-    features = train_dataset.meta.features
+    features = train_dataset.features
     camera_keys = [k for k in features if k.startswith("observation.images.") and "tactile" not in k and not k.endswith("carpet_0")]
     tactile_keys = [k for k in features if k.startswith("observation.images.") and "tactile" in k or k.endswith("carpet_0")]
-    
+
     camera_keys = [k for k in camera_keys if "cam_left_high" not in k]
     tactile_keys = [k for k in tactile_keys if "carpet_0" in k]
 
     n_cameras = len(camera_keys)
     
-
     vision_encoder = modified_resnet18(weights=None, features_per_group=args.features_per_group).to(args.device)
     vision_projection = ClipProjectionHead(out_dim=args.clip_dim).to(args.device)
 
