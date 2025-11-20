@@ -303,7 +303,7 @@ def clip_pretraining(train_dataset, test_dataset, train_features, save_dir: str,
         #    dataset_names = [test_dataset.repo_id]
 
         # Get test camera keys (needed for t-SNE visualization)
-        test_features = test_dataset.meta.features
+        test_features = train_features
         test_camera_keys = [k for k in test_features if k.startswith("observation.images.") and "tactile" not in k and not k.endswith("carpet_0")]
         test_tactile_keys = [k for k in test_features if k.startswith("observation.images.") and "tactile" in k or k.endswith("carpet_0")]
         test_camera_keys = [k for k in test_camera_keys if "cam_left_high" not in k]
