@@ -178,38 +178,63 @@ def modified_cnn(out_dim=512) -> nn.Module:
         nn.Conv2d(128, out_dim, kernel_size=1),  # project to model dim
     )
 
-def clip_loss(image_embeddings:torch.Tensor, tactile_embeddings:torch.Tensor, target_matrix:torch.Tensor, logit_scale = 1.0, visualize = False):
-
-    visualizations = []
-    image_embeddings = image_embeddings.squeeze(1)      # (B, D)
-    tactile_embeddings = tactile_embeddings.squeeze(1)    # (B, D)
-
-    image_logits   = logit_scale * (image_embeddings @ tactile_embeddings.T)  # (B, B)
-    tactile_logits = logit_scale * (tactile_embeddings @ image_embeddings.T)  # (B, B)
-
-    if visualize:
-        visualizations = (image_embeddings @ tactile_embeddings.T).detach().cpu().numpy()
-        if isinstance(logit_scale, torch.Tensor):
-            scale = float(logit_scale)
-        else:
-            scale = logit_scale
-        visualizations = visualizations / scale  # (B, B)
+def clip_loss(image_embeddings:torch.Tensor, tactile_embeddings:torch.Tensor, carpet_embeddings:torch.Tensor=None, 
+              logit_scale = 1.0, visualize = False,
+              camera_names=None, tactile_names=None, carpet_names=None):
 
     device = image_embeddings.device
     B = image_embeddings.shape[0]
-    targets = torch.arange(image_embeddings.shape[0], device=device)
+    targets = torch.arange(B, device=device)
+    
+    total_loss = 0.0
+    num_pairs = 0
+    visualizations = None
+    loss_dict = {}
+    
+    def compute_pair_loss(emb1, emb2):
+        logits_12 = logit_scale * (emb1 @ emb2.T)
+        logits_21 = logit_scale * (emb2 @ emb1.T)
+        loss = (F.cross_entropy(logits_12, targets) + F.cross_entropy(logits_21, targets)) / 2
+        return loss, logits_12
 
-    # flatten the batch and camera dimensions, then calculate the loss
-    image_logits = image_logits.reshape(B, B)
-    tactile_logits = tactile_logits.reshape(B, B)
+    n_cam = image_embeddings.shape[1]
+    n_tac = tactile_embeddings.shape[1]
+    
+    for i in range(n_cam):
+        cam_name = camera_names[i] if camera_names else f"cam_{i}"
+        for j in range(n_tac):
+            tac_name = tactile_names[j] if tactile_names else f"tac_{j}"
+            loss, logits = compute_pair_loss(image_embeddings[:, i], tactile_embeddings[:, j])
+            total_loss += loss
+            num_pairs += 1
+            loss_dict[f"loss/{cam_name}_vs_{tac_name}"] = loss.item()
+            
+            # Calculate Top-K Accuracy
+            acc_metrics = accuracy(image_embeddings[:, i], tactile_embeddings[:, j], topk=(1, 5, 10))
+            for metric_k, metric_v in acc_metrics.items():
+                loss_dict[f"acc/{cam_name}_vs_{tac_name}/{metric_k}"] = metric_v
 
-    # need to make the target matrix B, N, N
-    image_loss = F.cross_entropy(image_logits, targets)
-    tactile_loss = F.cross_entropy(tactile_logits, targets)
+            if visualize and i == 0 and j == 0:
+                scale = float(logit_scale) if isinstance(logit_scale, torch.Tensor) else logit_scale
+                visualizations = logits.detach().cpu().numpy() / scale
 
-    loss = ((image_loss + tactile_loss)/2.0).mean(dim=0)
+    if carpet_embeddings is not None:
+        n_carpet = carpet_embeddings.shape[1]
+        for i in range(n_cam):
+            cam_name = camera_names[i] if camera_names else f"cam_{i}"
+            for k in range(n_carpet):
+                carpet_name = carpet_names[k] if carpet_names else f"carpet_{k}"
+                loss, _ = compute_pair_loss(image_embeddings[:, i], carpet_embeddings[:, k])
+                total_loss += loss
+                num_pairs += 1
+                loss_dict[f"loss/{cam_name}_vs_{carpet_name}"] = loss.item()
+                
+                # Calculate Top-K Accuracy
+                acc_metrics = accuracy(image_embeddings[:, i], carpet_embeddings[:, k], topk=(1, 5, 10))
+                for metric_k, metric_v in acc_metrics.items():
+                    loss_dict[f"acc/{cam_name}_vs_{carpet_name}/{metric_k}"] = metric_v
 
-    return loss, visualizations
+    return total_loss / max(num_pairs, 1), visualizations, loss_dict
 
 def clip_pretraining(train_dataset, test_dataset, train_features, save_dir: str, args):
     if save_dir[-1] == '/':
@@ -265,6 +290,7 @@ def clip_pretraining(train_dataset, test_dataset, train_features, save_dir: str,
     
     for epoch in tqdm(range(args.n_epochs)): # train the model
         training_loss = np.zeros(n_cameras)
+        train_loss_sums = defaultdict(float) # Accumulate individual losses and accuracies
 
         carpet_encoder.train()
         carpet_projection.train()
@@ -320,12 +346,10 @@ def clip_pretraining(train_dataset, test_dataset, train_features, save_dir: str,
             total_samples += B
             sample_counter += B
             '''
-            # calculate target matrix
-            clip_N = image_embeddings.shape[1] + tactile_embeddings.shape[1] + carpet_embeddings.shape[1]
-            target_matrix = torch.eye(clip_N).to(args.device)
-
+            # calculate loss
             if batch_idx == 0 and epoch%args.plot_freq == 0: # visualize the first batch in each epoch
-                loss, plot_maps = clip_loss(image_embeddings, tactile_embeddings, target_matrix, visualize=True)
+                loss, plot_maps, batch_loss_dict = clip_loss(image_embeddings, tactile_embeddings, carpet_embeddings, visualize=True,
+                                                             camera_names=camera_keys, tactile_names=tactile_keys, carpet_names=carpet_keys)
                 try:
                     if args.wandb_enable:
                         plt.imshow(plot_maps)
@@ -341,11 +365,15 @@ def clip_pretraining(train_dataset, test_dataset, train_features, save_dir: str,
                 except:
                     raise
             else:
-                loss, _ = clip_loss(image_embeddings, tactile_embeddings, target_matrix, visualize=False)
+                loss, _, batch_loss_dict = clip_loss(image_embeddings, tactile_embeddings, carpet_embeddings, visualize=False,
+                                                     camera_names=camera_keys, tactile_names=tactile_keys, carpet_names=carpet_keys)
 
-            training_loss += loss.clone().detach().cpu().numpy()
+            training_loss += loss.item()
+            for k, v in batch_loss_dict.items():
+                train_loss_sums[k] += v
+
             optimizer.zero_grad()
-            loss.mean().backward()
+            loss.backward()
             optimizer.step()
         training_losses[epoch] = training_loss/len(train_loader)
 
@@ -358,15 +386,27 @@ def clip_pretraining(train_dataset, test_dataset, train_features, save_dir: str,
                 direction = "embedding1 to embedding2" if "1to2" in k else "embedding2 to embedding1"
                 metric_name = k.split('_')[0]
                 log_dict[f"train/{metric_name}: {direction}"] = v
+            
+            # Log individual losses and accuracies
+            for k, v in train_loss_sums.items():
+                log_dict[f"train/{k}"] = v / len(train_loader)
+                
             wandb.log(log_dict)
 
         # test the model
-        tactile_encoder.eval()
-        tactile_projection.eval()
-        vision_encoder.eval()
-        vision_projection.eval()
+        carpet_encoder.eval()
+        carpet_projection.eval()
+        for encoder in vision_encoders.values():
+            encoder.eval()
+        for projection in vision_projections.values():
+            projection.eval()
+        for encoder in tactile_encoders.values():
+            encoder.eval()
+        for projection in tactile_projections.values():
+            projection.eval()
 
         test_loss = np.zeros(n_cameras)
+        test_loss_sums = defaultdict(float)
 
         topk_sums = defaultdict(float)
         total_samples = 0
@@ -431,12 +471,12 @@ def clip_pretraining(train_dataset, test_dataset, train_features, save_dir: str,
                         next_time_id += 1
                     time_ids[idx_item] = time_key_to_id[key]
                 images = images.view(-1, C, H, W)
-                image_embeddings = vision_projection(vision_encoder(images))
+                image_embeddings = vision_projections[camera_keys[0]](vision_encoders[camera_keys[0]](images)) # Assuming all vision encoders are the same
                 image_embeddings = image_embeddings.view(B, n_cameras, args.clip_dim) # 1, 1, 512
 
                 B, n_tactile, C, H, W = tactiles.shape
                 tactiles = tactiles.view(-1, C, H, W)
-                tactile_embeddings = tactile_projection(tactile_encoder(tactiles))
+                tactile_embeddings = tactile_projections[tactile_keys[0]](tactile_encoders[tactile_keys[0]](tactiles)) # Assuming all tactile encoders are the same
                 tactile_embeddings = tactile_embeddings.view(B, n_tactile, args.clip_dim) # 1, 1, 512
 
                 batch_topk = accuracy(image_embeddings.squeeze(1), tactile_embeddings.squeeze(1), topk=(1, 5, 10))
@@ -459,11 +499,10 @@ def clip_pretraining(train_dataset, test_dataset, train_features, save_dir: str,
                 all_time_ids.append(tac_time_ids)
                 all_modality_labels.append(np.ones_like(tac_time_ids))
 
-                clip_N = n_cameras + n_tactile
-                target_matrix = torch.eye(clip_N).to(args.device)
-
                 if batch_idx == 0 and epoch%args.plot_freq == 0:
-                    loss, plot_maps = clip_loss(image_embeddings, tactile_embeddings, target_matrix, visualize=True)
+                    loss, plot_maps, batch_loss_dict = clip_loss(image_embeddings, tactile_embeddings, carpet_embeddings, 
+                                                                 visualize=True,
+                                                                 camera_names=test_camera_keys, tactile_names=test_tactile_keys, carpet_names=carpet_keys)
                     try:
                         if args.wandb_enable:
                             plt.imshow(plot_maps)
@@ -480,8 +519,12 @@ def clip_pretraining(train_dataset, test_dataset, train_features, save_dir: str,
                     except:
                         raise
                 else:
-                    loss, _ = clip_loss(image_embeddings, tactile_embeddings, target_matrix, visualize=False)
-                test_loss += loss.clone().detach().cpu().numpy()
+                    loss, _, batch_loss_dict = clip_loss(image_embeddings, tactile_embeddings, carpet_embeddings, 
+                                                         visualize=False,
+                                                         camera_names=test_camera_keys, tactile_names=test_tactile_keys, carpet_names=carpet_keys)
+                test_loss += loss.item()
+                for k, v in batch_loss_dict.items():
+                    test_loss_sums[k] += v
         
         testing_losses[epoch] = test_loss/len(test_loader)
         
@@ -587,16 +630,21 @@ def clip_pretraining(train_dataset, test_dataset, train_features, save_dir: str,
                 "test/loss": testing_losses[epoch].mean(),
                 "epoch": epoch,
             }
+            # Log testing top-k
             for k, v in epoch_topk.items():
                 direction = "embedding1 to embedding2" if "1to2" in k else "embedding2 to embedding1"
                 metric_name = k.split('_')[0]
                 log_dict[f"test/{metric_name}: {direction}"] = v
+            
+            # Log individual test losses and accuracies
+            for k, v in test_loss_sums.items():
+                log_dict[f"test/{k}"] = v / len(test_loader)
+                
             wandb.log(log_dict)
 
         # save the models
         if (epoch+1) % args.save_freq == 0:
             checkpoint_prefix = f'{run_name}_epoch_{epoch}'
-            torch.save(vision_encoder.state_dict(), f'{save_dir}/{checkpoint_prefix}_vision_encoder.pth')
             torch.save(vision_projection.state_dict(), f'{save_dir}/{checkpoint_prefix}_vision_projection.pth')
             torch.save(tactile_encoder.state_dict(), f'{save_dir}/{checkpoint_prefix}_tactile_encoder.pth')
             torch.save(tactile_projection.state_dict(), f'{save_dir}/{checkpoint_prefix}_tactile_projection.pth')
