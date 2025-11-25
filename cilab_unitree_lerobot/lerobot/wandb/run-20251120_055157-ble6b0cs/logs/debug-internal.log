@@ -1,0 +1,11 @@
+{"time":"2025-11-20T05:51:58.123144891Z","level":"INFO","msg":"stream: starting","core version":"0.23.0"}
+{"time":"2025-11-20T05:51:58.510694468Z","level":"INFO","msg":"stream: created new stream","id":"ble6b0cs"}
+{"time":"2025-11-20T05:51:58.510757366Z","level":"INFO","msg":"handler: started","stream_id":"ble6b0cs"}
+{"time":"2025-11-20T05:51:58.510930451Z","level":"INFO","msg":"stream: started","id":"ble6b0cs"}
+{"time":"2025-11-20T05:51:58.510968834Z","level":"INFO","msg":"writer: started","stream_id":"ble6b0cs"}
+{"time":"2025-11-20T05:51:58.510972911Z","level":"INFO","msg":"sender: started","stream_id":"ble6b0cs"}
+{"time":"2025-11-20T05:52:06.843655853Z","level":"INFO","msg":"stream: closing","id":"ble6b0cs"}
+{"time":"2025-11-20T05:52:07.384394128Z","level":"INFO","msg":"fileTransfer: Close: file transfer manager closed"}
+{"time":"2025-11-20T05:52:07.659512565Z","level":"INFO","msg":"handler: closed","stream_id":"ble6b0cs"}
+{"time":"2025-11-20T05:52:07.659663969Z","level":"INFO","msg":"sender: closed","stream_id":"ble6b0cs"}
+{"time":"2025-11-20T05:52:07.659678086Z","level":"INFO","msg":"stream: closed","id":"ble6b0cs"}

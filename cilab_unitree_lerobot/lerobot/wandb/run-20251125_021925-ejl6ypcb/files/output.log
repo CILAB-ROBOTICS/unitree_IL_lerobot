@@ -1,0 +1,27 @@
+Resolving data files: 100%|███████████████████████████████████████████████████████████████████████████████████████████████| 51/51 [00:00<00:00, 150534.49it/s]
+Resolving data files: 100%|████████████████████████████████████████████████████████████████████████████████████████████████| 20/20 [00:00<00:00, 20405.27it/s]
+  0%|                                                                                                                                 | 0/100 [11:51<?, ?it/s]
+Traceback (most recent call last):
+  File "/workspace/cilab_unitree_lerobot/lerobot/lerobot/scripts/pretrain.py", line 741, in <module>
+  File "/workspace/cilab_unitree_lerobot/lerobot/lerobot/scripts/pretrain.py", line 704, in run_clip_pretraining
+  File "/workspace/cilab_unitree_lerobot/lerobot/lerobot/scripts/pretrain.py", line 491, in clip_pretraining
+    visualize=True,
+  File "/workspace/cilab_unitree_lerobot/lerobot/lerobot/scripts/pretrain.py", line 227, in clip_loss
+    loss, _ = compute_pair_loss(image_embeddings[:, i], carpet_embeddings[:, k])
+  File "/workspace/cilab_unitree_lerobot/lerobot/lerobot/scripts/pretrain.py", line 197, in compute_pair_loss
+    loss = (F.cross_entropy(logits_12, targets) + F.cross_entropy(logits_21, targets)) / 2
+  File "/usr/local/lib/python3.10/dist-packages/torch/nn/functional.py", line 3458, in cross_entropy
+    return torch._C._nn.cross_entropy_loss(
+ValueError: Expected input batch_size (15) to match target batch_size (16).
+Traceback (most recent call last):
+  File "/workspace/cilab_unitree_lerobot/lerobot/lerobot/scripts/pretrain.py", line 741, in <module>
+  File "/workspace/cilab_unitree_lerobot/lerobot/lerobot/scripts/pretrain.py", line 704, in run_clip_pretraining
+  File "/workspace/cilab_unitree_lerobot/lerobot/lerobot/scripts/pretrain.py", line 491, in clip_pretraining
+    visualize=True,
+  File "/workspace/cilab_unitree_lerobot/lerobot/lerobot/scripts/pretrain.py", line 227, in clip_loss
+    loss, _ = compute_pair_loss(image_embeddings[:, i], carpet_embeddings[:, k])
+  File "/workspace/cilab_unitree_lerobot/lerobot/lerobot/scripts/pretrain.py", line 197, in compute_pair_loss
+    loss = (F.cross_entropy(logits_12, targets) + F.cross_entropy(logits_21, targets)) / 2
+  File "/usr/local/lib/python3.10/dist-packages/torch/nn/functional.py", line 3458, in cross_entropy
+    return torch._C._nn.cross_entropy_loss(
+ValueError: Expected input batch_size (15) to match target batch_size (16).

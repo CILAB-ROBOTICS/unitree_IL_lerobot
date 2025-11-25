@@ -1,0 +1,73 @@
+Resolving data files: 100%|███████████████████████████████████████████████████████████████████████████████████████████████| 51/51 [00:00<00:00, 118904.67it/s]
+Resolving data files: 100%|████████████████████████████████████████████████████████████████████████████████████████████████| 20/20 [00:00<00:00, 18367.87it/s]
+  0%|                                                                                                                                 | 0/100 [00:08<?, ?it/s]
+torch.Size([16, 2, 256]) torch.Size([16, 34, 256]) torch.Size([16, 1, 256])
+torch.Size([16, 2, 256]) torch.Size([16, 34, 256]) torch.Size([16, 1, 256])
+torch.Size([16, 2, 256]) torch.Size([16, 34, 256]) torch.Size([16, 1, 256])
+torch.Size([16, 2, 256]) torch.Size([16, 34, 256]) torch.Size([16, 1, 256])
+torch.Size([16, 2, 256]) torch.Size([16, 34, 256]) torch.Size([16, 1, 256])
+torch.Size([16, 2, 256]) torch.Size([16, 34, 256]) torch.Size([16, 1, 256])
+torch.Size([16, 2, 256]) torch.Size([16, 34, 256]) torch.Size([16, 1, 256])
+torch.Size([16, 2, 256]) torch.Size([16, 34, 256]) torch.Size([16, 1, 256])
+torch.Size([16, 2, 256]) torch.Size([16, 34, 256]) torch.Size([16, 1, 256])
+torch.Size([16, 2, 256]) torch.Size([16, 34, 256]) torch.Size([16, 1, 256])
+Traceback (most recent call last):
+  File "/workspace/cilab_unitree_lerobot/lerobot/lerobot/scripts/pretrain.py", line 742, in <module>
+    run_clip_pretraining(args)
+  File "/workspace/cilab_unitree_lerobot/lerobot/lerobot/scripts/pretrain.py", line 705, in run_clip_pretraining
+    clip_pretraining(train_dataset, test_dataset, train_features, save_dir=save_run_dir, args=args)
+  File "/workspace/cilab_unitree_lerobot/lerobot/lerobot/scripts/pretrain.py", line 306, in clip_pretraining
+    for batch_idx, batch in enumerate(train_loader):
+  File "/usr/local/lib/python3.10/dist-packages/torch/utils/data/dataloader.py", line 732, in __next__
+    data = self._next_data()
+  File "/usr/local/lib/python3.10/dist-packages/torch/utils/data/dataloader.py", line 788, in _next_data
+    data = self._dataset_fetcher.fetch(index)  # may raise StopIteration
+  File "/usr/local/lib/python3.10/dist-packages/torch/utils/data/_utils/fetch.py", line 52, in fetch
+    data = [self.dataset[idx] for idx in possibly_batched_index]
+  File "/usr/local/lib/python3.10/dist-packages/torch/utils/data/_utils/fetch.py", line 52, in <listcomp>
+    data = [self.dataset[idx] for idx in possibly_batched_index]
+  File "/workspace/unitree_lerobot/lerobot/lerobot/common/datasets/lerobot_dataset.py", line 739, in __getitem__
+    video_frames = self._query_videos(query_timestamps, ep_idx)
+  File "/workspace/unitree_lerobot/lerobot/lerobot/common/datasets/lerobot_dataset.py", line 711, in _query_videos
+    frames = decode_video_frames(video_path, query_ts, self.tolerance_s, self.video_backend)
+  File "/workspace/unitree_lerobot/lerobot/lerobot/common/datasets/video_utils.py", line 66, in decode_video_frames
+    return decode_video_frames_torchcodec(video_path, timestamps, tolerance_s)
+  File "/workspace/unitree_lerobot/lerobot/lerobot/common/datasets/video_utils.py", line 206, in decode_video_frames_torchcodec
+    frames_batch = decoder.get_frames_at(indices=frame_indices)
+  File "/usr/local/lib/python3.10/dist-packages/torchcodec/decoders/_video_decoder.py", line 259, in get_frames_at
+    data, pts_seconds, duration_seconds = core.get_frames_at_indices(
+  File "/usr/local/lib/python3.10/dist-packages/torchcodec/_core/ops.py", line 246, in get_frames_at_indices
+    return _get_frames_at_indices_tensor_input(decoder, frame_indices=frame_indices)
+  File "/usr/local/lib/python3.10/dist-packages/torch/_ops.py", line 841, in __call__
+    return self._op(*args, **kwargs)
+KeyboardInterrupt
+Traceback (most recent call last):
+  File "/workspace/cilab_unitree_lerobot/lerobot/lerobot/scripts/pretrain.py", line 742, in <module>
+    run_clip_pretraining(args)
+  File "/workspace/cilab_unitree_lerobot/lerobot/lerobot/scripts/pretrain.py", line 705, in run_clip_pretraining
+    clip_pretraining(train_dataset, test_dataset, train_features, save_dir=save_run_dir, args=args)
+  File "/workspace/cilab_unitree_lerobot/lerobot/lerobot/scripts/pretrain.py", line 306, in clip_pretraining
+    for batch_idx, batch in enumerate(train_loader):
+  File "/usr/local/lib/python3.10/dist-packages/torch/utils/data/dataloader.py", line 732, in __next__
+    data = self._next_data()
+  File "/usr/local/lib/python3.10/dist-packages/torch/utils/data/dataloader.py", line 788, in _next_data
+    data = self._dataset_fetcher.fetch(index)  # may raise StopIteration
+  File "/usr/local/lib/python3.10/dist-packages/torch/utils/data/_utils/fetch.py", line 52, in fetch
+    data = [self.dataset[idx] for idx in possibly_batched_index]
+  File "/usr/local/lib/python3.10/dist-packages/torch/utils/data/_utils/fetch.py", line 52, in <listcomp>
+    data = [self.dataset[idx] for idx in possibly_batched_index]
+  File "/workspace/unitree_lerobot/lerobot/lerobot/common/datasets/lerobot_dataset.py", line 739, in __getitem__
+    video_frames = self._query_videos(query_timestamps, ep_idx)
+  File "/workspace/unitree_lerobot/lerobot/lerobot/common/datasets/lerobot_dataset.py", line 711, in _query_videos
+    frames = decode_video_frames(video_path, query_ts, self.tolerance_s, self.video_backend)
+  File "/workspace/unitree_lerobot/lerobot/lerobot/common/datasets/video_utils.py", line 66, in decode_video_frames
+    return decode_video_frames_torchcodec(video_path, timestamps, tolerance_s)
+  File "/workspace/unitree_lerobot/lerobot/lerobot/common/datasets/video_utils.py", line 206, in decode_video_frames_torchcodec
+    frames_batch = decoder.get_frames_at(indices=frame_indices)
+  File "/usr/local/lib/python3.10/dist-packages/torchcodec/decoders/_video_decoder.py", line 259, in get_frames_at
+    data, pts_seconds, duration_seconds = core.get_frames_at_indices(
+  File "/usr/local/lib/python3.10/dist-packages/torchcodec/_core/ops.py", line 246, in get_frames_at_indices
+    return _get_frames_at_indices_tensor_input(decoder, frame_indices=frame_indices)
+  File "/usr/local/lib/python3.10/dist-packages/torch/_ops.py", line 841, in __call__
+    return self._op(*args, **kwargs)
+KeyboardInterrupt

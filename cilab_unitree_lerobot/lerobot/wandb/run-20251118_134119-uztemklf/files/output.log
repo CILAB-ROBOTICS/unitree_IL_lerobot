@@ -1,0 +1,20 @@
+Resolving data files: 100%|██████████████████████████████████████████████████████████████████████████████████████████████████████| 51/51 [00:00<00:00, 87847.85it/s]
+Resolving data files: 100%|██████████████████████████████████████████████████████████████████████████████████████████████████████| 41/41 [00:00<00:00, 48743.33it/s]
+Resolving data files: 100%|██████████████████████████████████████████████████████████████████████████████████████████████████████| 20/20 [00:00<00:00, 18192.60it/s]
+  0%|                                                                                                                                       | 0/100 [14:50<?, ?it/s]
+Traceback (most recent call last):
+  File "/workspace/cilab_unitree_lerobot/lerobot/lerobot/scripts/pretrain.py", line 624, in <module>
+    run_clip_pretraining(args)
+  File "/workspace/cilab_unitree_lerobot/lerobot/lerobot/scripts/pretrain.py", line 587, in run_clip_pretraining
+    clip_pretraining(train_dataset, test_dataset, train_features, save_dir=save_run_dir, args=args)
+  File "/workspace/cilab_unitree_lerobot/lerobot/lerobot/scripts/pretrain.py", line 306, in clip_pretraining
+    test_features = test_dataset.meta.features
+AttributeError: 'ConcatDataset' object has no attribute 'meta'
+Traceback (most recent call last):
+  File "/workspace/cilab_unitree_lerobot/lerobot/lerobot/scripts/pretrain.py", line 624, in <module>
+    run_clip_pretraining(args)
+  File "/workspace/cilab_unitree_lerobot/lerobot/lerobot/scripts/pretrain.py", line 587, in run_clip_pretraining
+    clip_pretraining(train_dataset, test_dataset, train_features, save_dir=save_run_dir, args=args)
+  File "/workspace/cilab_unitree_lerobot/lerobot/lerobot/scripts/pretrain.py", line 306, in clip_pretraining
+    test_features = test_dataset.meta.features
+AttributeError: 'ConcatDataset' object has no attribute 'meta'

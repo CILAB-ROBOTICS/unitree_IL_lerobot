@@ -1,11 +1,13 @@
 import argparse
 import io
 import os
+import math
 import logging
 import time
 from typing import Callable
 from collections import defaultdict
 
+import einops
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -15,7 +17,7 @@ from PIL import Image
 from matplotlib import pyplot as plt
 from matplotlib.lines import Line2D
 from sklearn.manifold import TSNE
-from torch import nn
+from torch import nn, Tensor
 from torch.utils.data import DataLoader
 from torch.utils.data import ConcatDataset
 from tqdm import tqdm
@@ -178,9 +180,8 @@ def modified_cnn(out_dim=512) -> nn.Module:
         nn.Conv2d(128, out_dim, kernel_size=1),  # project to model dim
     )
 
-def clip_loss(image_embeddings:torch.Tensor, tactile_embeddings:torch.Tensor, carpet_embeddings:torch.Tensor=None, 
-              logit_scale = 1.0, visualize = False,
-              camera_names=None, tactile_names=None, carpet_names=None):
+def clip_loss(image_embeddings:torch.Tensor, tactile_embeddings:torch.Tensor, carpet_embeddings:torch.Tensor=None, logit_scale = 1.0, 
+              visualize = False, camera_names=None, tactile_names=None, carpet_names=None):
 
     device = image_embeddings.device
     B = image_embeddings.shape[0]
@@ -192,14 +193,18 @@ def clip_loss(image_embeddings:torch.Tensor, tactile_embeddings:torch.Tensor, ca
     loss_dict = {}
     
     def compute_pair_loss(emb1, emb2):
+        B = emb1.shape[0]  # emb1 batch size 기준
+        targets = torch.arange(B, device=emb1.device)
         logits_12 = logit_scale * (emb1 @ emb2.T)
         logits_21 = logit_scale * (emb2 @ emb1.T)
-        loss = (F.cross_entropy(logits_12, targets) + F.cross_entropy(logits_21, targets)) / 2
+        loss = (F.cross_entropy(logits_12, targets) +
+                F.cross_entropy(logits_21, targets)) / 2
         return loss, logits_12
 
     n_cam = image_embeddings.shape[1]
     n_tac = tactile_embeddings.shape[1]
-    
+    n_carpet = carpet_embeddings.shape[1]
+
     for i in range(n_cam):
         cam_name = camera_names[i] if camera_names else f"cam_{i}"
         for j in range(n_tac):
@@ -217,9 +222,8 @@ def clip_loss(image_embeddings:torch.Tensor, tactile_embeddings:torch.Tensor, ca
             if visualize and i == 0 and j == 0:
                 scale = float(logit_scale) if isinstance(logit_scale, torch.Tensor) else logit_scale
                 visualizations = logits.detach().cpu().numpy() / scale
-
+    '''
     if carpet_embeddings is not None:
-        n_carpet = carpet_embeddings.shape[1]
         for i in range(n_cam):
             cam_name = camera_names[i] if camera_names else f"cam_{i}"
             for k in range(n_carpet):
@@ -233,8 +237,61 @@ def clip_loss(image_embeddings:torch.Tensor, tactile_embeddings:torch.Tensor, ca
                 acc_metrics = accuracy(image_embeddings[:, i], carpet_embeddings[:, k], topk=(1, 5, 10))
                 for metric_k, metric_v in acc_metrics.items():
                     loss_dict[f"acc/{cam_name}_vs_{carpet_name}/{metric_k}"] = metric_v
-
+    '''
     return total_loss / max(num_pairs, 1), visualizations, loss_dict
+
+class ACTSinusoidalPositionEmbedding2d(nn.Module):
+    """2D sinusoidal positional embeddings similar to what's presented in Attention Is All You Need.
+
+    The variation is that the position indices are normalized in [0, 2π] (not quite: the lower bound is 1/H
+    for the vertical direction, and 1/W for the horizontal direction.
+    """
+
+    def __init__(self, dimension: int):
+        """
+        Args:
+            dimension: The desired dimension of the embeddings.
+        """
+        super().__init__()
+        self.dimension = dimension
+        self._two_pi = 2 * math.pi
+        self._eps = 1e-6
+        # Inverse "common ratio" for the geometric progression in sinusoid frequencies.
+        self._temperature = 10000
+
+    def forward(self, x: Tensor) -> Tensor:
+        """
+        Args:
+            x: A (B, C, H, W) batch of 2D feature map to generate the embeddings for.
+        Returns:
+            A (1, C, H, W) batch of corresponding sinusoidal positional embeddings.
+        """
+        not_mask = torch.ones_like(x[0, :1])  # (1, H, W)
+        # Note: These are like range(1, H+1) and range(1, W+1) respectively, but in most implementations
+        # they would be range(0, H) and range(0, W). Keeping it at as is to match the original code.
+        y_range = not_mask.cumsum(1, dtype=torch.float32)
+        x_range = not_mask.cumsum(2, dtype=torch.float32)
+
+        # "Normalize" the position index such that it ranges in [0, 2π].
+        # Note: Adding epsilon on the denominator should not be needed as all values of y_embed and x_range
+        # are non-zero by construction. This is an artifact of the original code.
+        y_range = y_range / (y_range[:, -1:, :] + self._eps) * self._two_pi
+        x_range = x_range / (x_range[:, :, -1:] + self._eps) * self._two_pi
+
+        inverse_frequency = self._temperature ** (
+            2 * (torch.arange(self.dimension, dtype=torch.float32, device=x.device) // 2) / self.dimension
+        )
+
+        x_range = x_range.unsqueeze(-1) / inverse_frequency  # (1, H, W, 1)
+        y_range = y_range.unsqueeze(-1) / inverse_frequency  # (1, H, W, 1)
+
+        # Note: this stack then flatten operation results in interleaved sine and cosine terms.
+        # pos_embed_x and pos_embed_y are (1, H, W, C // 2).
+        pos_embed_x = torch.stack((x_range[..., 0::2].sin(), x_range[..., 1::2].cos()), dim=-1).flatten(3)
+        pos_embed_y = torch.stack((y_range[..., 0::2].sin(), y_range[..., 1::2].cos()), dim=-1).flatten(3)
+        pos_embed = torch.cat((pos_embed_y, pos_embed_x), dim=3).permute(0, 3, 1, 2)  # (1, C, H, W)
+
+        return pos_embed
 
 def clip_pretraining(train_dataset, test_dataset, train_features, save_dir: str, args):
     if save_dir[-1] == '/':
@@ -324,13 +381,26 @@ def clip_pretraining(train_dataset, test_dataset, train_features, save_dir: str,
                 image_embedding_list.append(out)
             image_embeddings = torch.stack(image_embedding_list, dim=1)  # B, N_cameras, D
         
-            tactile_feat_list = []
+            all_2d_features = []
+            all_2d_pos_embeds = []
+            encoder_cam_feat_pos_embed = ACTSinusoidalPositionEmbedding2d(args.clip_dim // 2)
             for key in tactile_keys:
-                tac_tensor = batch[key]  # B, C, H, W 
-                out = tactile_encoders[key](tac_tensor) 
-                out = tactile_projections[key](out)
-                tactile_feat_list.append(out)
-            tactile_embeddings = torch.stack(tactile_feat_list, dim=1)  # B, N_tactile, D
+                tac_tensor = batch[key] # (B, C, H, W)
+                tac_features = tactile_encoders[key](tac_tensor)
+                tac_features = tactile_projections[key](tac_features)
+                tac_pos_embed = encoder_cam_feat_pos_embed(tac_features) 
+                B, D, Hf, Wf = tac_features.shape
+                feat_flat = tac_features.permute(2, 3, 0, 1).reshape(Hf * Wf, B, D)
+                pos_flat  = tac_pos_embed.permute(2, 3, 0, 1).reshape(Hf * Wf, B, D)
+            
+                all_2d_features.append(feat_flat)
+                all_2d_pos_embeds.append(pos_flat)
+            tokens_2d = torch.cat(all_2d_features, dim=0)   # (NPIX_total, B, D)
+            pos_embed_2d = torch.cat(all_2d_pos_embeds, dim=0)  # (NPIX_total, B, D)
+            print(tokens_2d.shape)
+            print(pos_embed_2d.shape)
+
+            # 이후에 여기에 다 qpos 구해서 넣기
 
             car_tensors = [batch[k] for k in carpet_keys]   # list of B, C, H, W 
             carpets = torch.stack(car_tensors, dim=1)       # B, N_carpet, C, H, W
@@ -339,13 +409,6 @@ def clip_pretraining(train_dataset, test_dataset, train_features, save_dir: str,
             carpet_emb = carpet_projection(carpet_encoder(carpets))
             carpet_embeddings = carpet_emb.view(B, Ncarpet, args.clip_dim)
 
-            '''
-            train_batch_topk = accuracy(image_embeddings.squeeze(1), carpet_embeddings.squeeze(1), topk=(1, 5, 10))
-            for k, v in train_batch_topk.items():
-                train_topk_sums[k] += v * B
-            total_samples += B
-            sample_counter += B
-            '''
             # calculate loss
             if batch_idx == 0 and epoch%args.plot_freq == 0: # visualize the first batch in each epoch
                 loss, plot_maps, batch_loss_dict = clip_loss(image_embeddings, tactile_embeddings, carpet_embeddings, visualize=True,
@@ -377,20 +440,20 @@ def clip_pretraining(train_dataset, test_dataset, train_features, save_dir: str,
             optimizer.step()
         training_losses[epoch] = training_loss/len(train_loader)
 
-        train_epoch_topk = {k: (v / total_samples) for k, v in train_topk_sums.items()}
+        #train_epoch_topk = {k: (v / total_samples) for k, v in train_topk_sums.items()}
 
         # Log metrics to W&B
         if args.wandb_enable:
             log_dict = {}
+            '''
             for k, v in train_epoch_topk.items():
                 direction = "embedding1 to embedding2" if "1to2" in k else "embedding2 to embedding1"
                 metric_name = k.split('_')[0]
                 log_dict[f"train/{metric_name}: {direction}"] = v
-            
+            '''
             # Log individual losses and accuracies
             for k, v in train_loss_sums.items():
                 log_dict[f"train/{k}"] = v / len(train_loader)
-                
             wandb.log(log_dict)
 
         # test the model
@@ -417,12 +480,6 @@ def clip_pretraining(train_dataset, test_dataset, train_features, save_dir: str,
         time_id_to_pair = {}
         next_time_id = 0
         sample_counter = 0
-
-        # Get dataset names for labeling
-        #if isinstance(test_dataset, MultiLeRobotDataset):
-        #    dataset_names = test_dataset.repo_ids
-        #else:
-        #    dataset_names = [test_dataset.repo_id]
 
         # Get test camera keys (needed for t-SNE visualization)
         test_features = train_features
@@ -500,9 +557,8 @@ def clip_pretraining(train_dataset, test_dataset, train_features, save_dir: str,
                 all_modality_labels.append(np.ones_like(tac_time_ids))
 
                 if batch_idx == 0 and epoch%args.plot_freq == 0:
-                    loss, plot_maps, batch_loss_dict = clip_loss(image_embeddings, tactile_embeddings, carpet_embeddings, 
-                                                                 visualize=True,
-                                                                 camera_names=test_camera_keys, tactile_names=test_tactile_keys, carpet_names=carpet_keys)
+                    loss, plot_maps, batch_loss_dict = clip_loss(image_embeddings, tactile_embeddings, carpet_embeddings, visualize=True, 
+                                                                camera_names=test_camera_keys, tactile_names=test_tactile_keys, carpet_names=carpet_keys)
                     try:
                         if args.wandb_enable:
                             plt.imshow(plot_maps)
@@ -519,8 +575,7 @@ def clip_pretraining(train_dataset, test_dataset, train_features, save_dir: str,
                     except:
                         raise
                 else:
-                    loss, _, batch_loss_dict = clip_loss(image_embeddings, tactile_embeddings, carpet_embeddings, 
-                                                         visualize=False,
+                    loss, _, batch_loss_dict = clip_loss(image_embeddings, tactile_embeddings, carpet_embeddings, visualize=False,
                                                          camera_names=test_camera_keys, tactile_names=test_tactile_keys, carpet_names=carpet_keys)
                 test_loss += loss.item()
                 for k, v in batch_loss_dict.items():

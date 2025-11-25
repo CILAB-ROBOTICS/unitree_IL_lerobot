@@ -1,0 +1,63 @@
+Resolving data files: 100%|███████████████████████████████████████████████████████████████████████████████████| 20/20 [00:00<00:00, 158875.15it/s]
+Resolving data files: 100%|████████████████████████████████████████████████████████████████████████████████████| 20/20 [00:00<00:00, 33608.21it/s]
+  2%|██                                                                                                       | 2/100 [22:51<18:40:02, 685.74s/it]
+Traceback (most recent call last):
+  File "/workspace/cilab_unitree_lerobot/lerobot/lerobot/scripts/pretrain.py", line 740, in <module>
+    wandb_run = None
+  File "/workspace/cilab_unitree_lerobot/lerobot/lerobot/scripts/pretrain.py", line 703, in run_clip_pretraining
+    log_dict[f"test/{k}"] = v / len(test_loader)
+  File "/workspace/cilab_unitree_lerobot/lerobot/lerobot/scripts/pretrain.py", line 308, in clip_pretraining
+    n_cameras = len(camera_keys)
+  File "/usr/local/lib/python3.10/dist-packages/torch/utils/data/dataloader.py", line 732, in __next__
+    data = self._next_data()
+  File "/usr/local/lib/python3.10/dist-packages/torch/utils/data/dataloader.py", line 788, in _next_data
+    data = self._dataset_fetcher.fetch(index)  # may raise StopIteration
+  File "/usr/local/lib/python3.10/dist-packages/torch/utils/data/_utils/fetch.py", line 52, in fetch
+    data = [self.dataset[idx] for idx in possibly_batched_index]
+  File "/usr/local/lib/python3.10/dist-packages/torch/utils/data/_utils/fetch.py", line 52, in <listcomp>
+    data = [self.dataset[idx] for idx in possibly_batched_index]
+  File "/workspace/unitree_lerobot/lerobot/lerobot/common/datasets/lerobot_dataset.py", line 739, in __getitem__
+    video_frames = self._query_videos(query_timestamps, ep_idx)
+  File "/workspace/unitree_lerobot/lerobot/lerobot/common/datasets/lerobot_dataset.py", line 711, in _query_videos
+    frames = decode_video_frames(video_path, query_ts, self.tolerance_s, self.video_backend)
+  File "/workspace/unitree_lerobot/lerobot/lerobot/common/datasets/video_utils.py", line 66, in decode_video_frames
+    return decode_video_frames_torchcodec(video_path, timestamps, tolerance_s)
+  File "/workspace/unitree_lerobot/lerobot/lerobot/common/datasets/video_utils.py", line 195, in decode_video_frames_torchcodec
+    decoder = VideoDecoder(video_path, device=device, seek_mode="approximate")
+  File "/usr/local/lib/python3.10/dist-packages/torchcodec/decoders/_video_decoder.py", line 134, in __init__
+    self._decoder = create_decoder(source=source, seek_mode=seek_mode)
+  File "/usr/local/lib/python3.10/dist-packages/torchcodec/decoders/_decoder_utils.py", line 31, in create_decoder
+    return core.create_from_file(str(source), seek_mode)
+  File "/usr/local/lib/python3.10/dist-packages/torch/_ops.py", line 841, in __call__
+    return self._op(*args, **kwargs)
+KeyboardInterrupt
+Traceback (most recent call last):
+  File "/workspace/cilab_unitree_lerobot/lerobot/lerobot/scripts/pretrain.py", line 740, in <module>
+    wandb_run = None
+  File "/workspace/cilab_unitree_lerobot/lerobot/lerobot/scripts/pretrain.py", line 703, in run_clip_pretraining
+    log_dict[f"test/{k}"] = v / len(test_loader)
+  File "/workspace/cilab_unitree_lerobot/lerobot/lerobot/scripts/pretrain.py", line 308, in clip_pretraining
+    n_cameras = len(camera_keys)
+  File "/usr/local/lib/python3.10/dist-packages/torch/utils/data/dataloader.py", line 732, in __next__
+    data = self._next_data()
+  File "/usr/local/lib/python3.10/dist-packages/torch/utils/data/dataloader.py", line 788, in _next_data
+    data = self._dataset_fetcher.fetch(index)  # may raise StopIteration
+  File "/usr/local/lib/python3.10/dist-packages/torch/utils/data/_utils/fetch.py", line 52, in fetch
+    data = [self.dataset[idx] for idx in possibly_batched_index]
+  File "/usr/local/lib/python3.10/dist-packages/torch/utils/data/_utils/fetch.py", line 52, in <listcomp>
+    data = [self.dataset[idx] for idx in possibly_batched_index]
+  File "/workspace/unitree_lerobot/lerobot/lerobot/common/datasets/lerobot_dataset.py", line 739, in __getitem__
+    video_frames = self._query_videos(query_timestamps, ep_idx)
+  File "/workspace/unitree_lerobot/lerobot/lerobot/common/datasets/lerobot_dataset.py", line 711, in _query_videos
+    frames = decode_video_frames(video_path, query_ts, self.tolerance_s, self.video_backend)
+  File "/workspace/unitree_lerobot/lerobot/lerobot/common/datasets/video_utils.py", line 66, in decode_video_frames
+    return decode_video_frames_torchcodec(video_path, timestamps, tolerance_s)
+  File "/workspace/unitree_lerobot/lerobot/lerobot/common/datasets/video_utils.py", line 195, in decode_video_frames_torchcodec
+    decoder = VideoDecoder(video_path, device=device, seek_mode="approximate")
+  File "/usr/local/lib/python3.10/dist-packages/torchcodec/decoders/_video_decoder.py", line 134, in __init__
+    self._decoder = create_decoder(source=source, seek_mode=seek_mode)
+  File "/usr/local/lib/python3.10/dist-packages/torchcodec/decoders/_decoder_utils.py", line 31, in create_decoder
+    return core.create_from_file(str(source), seek_mode)
+  File "/usr/local/lib/python3.10/dist-packages/torch/_ops.py", line 841, in __call__
+    return self._op(*args, **kwargs)
+KeyboardInterrupt

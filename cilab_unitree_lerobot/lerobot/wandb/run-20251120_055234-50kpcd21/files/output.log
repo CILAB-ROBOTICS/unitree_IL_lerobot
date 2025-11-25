@@ -1,0 +1,21 @@
+Resolving data files: 100%|████████████████████████████████████████████████████████████████████████████████| 51/51 [00:00<00:00, 191503.58it/s]
+Resolving data files: 100%|█████████████████████████████████████████████████████████████████████████████████| 41/41 [00:00<00:00, 63199.73it/s]
+Resolving data files: 100%|████████████████████████████████████████████████████████████████████████████████| 20/20 [00:00<00:00, 137970.53it/s]
+  0%|                                                                                                                  | 0/100 [00:00<?, ?it/s]WARNING 2025-11-20 06:08:06 /pretrain.py:44 Requested top-10 but batch size is 8.
+  0%|                                                                                                                  | 0/100 [15:24<?, ?it/s]
+Traceback (most recent call last):
+  File "/workspace/cilab_unitree_lerobot/lerobot/lerobot/scripts/pretrain.py", line 645, in <module>
+    run_clip_pretraining(args)
+  File "/workspace/cilab_unitree_lerobot/lerobot/lerobot/scripts/pretrain.py", line 608, in run_clip_pretraining
+    clip_pretraining(train_dataset, test_dataset, train_features, save_dir=save_run_dir, args=args)
+  File "/workspace/cilab_unitree_lerobot/lerobot/lerobot/scripts/pretrain.py", line 299, in clip_pretraining
+    log_dict[f"train/{metric_name}: {direction}"] = v
+UnboundLocalError: local variable 'log_dict' referenced before assignment
+Traceback (most recent call last):
+  File "/workspace/cilab_unitree_lerobot/lerobot/lerobot/scripts/pretrain.py", line 645, in <module>
+    run_clip_pretraining(args)
+  File "/workspace/cilab_unitree_lerobot/lerobot/lerobot/scripts/pretrain.py", line 608, in run_clip_pretraining
+    clip_pretraining(train_dataset, test_dataset, train_features, save_dir=save_run_dir, args=args)
+  File "/workspace/cilab_unitree_lerobot/lerobot/lerobot/scripts/pretrain.py", line 299, in clip_pretraining
+    log_dict[f"train/{metric_name}: {direction}"] = v
+UnboundLocalError: local variable 'log_dict' referenced before assignment

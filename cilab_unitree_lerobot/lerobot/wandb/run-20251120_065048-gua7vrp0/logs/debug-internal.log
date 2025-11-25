@@ -1,0 +1,7 @@
+{"time":"2025-11-20T06:50:48.868179829Z","level":"INFO","msg":"stream: starting","core version":"0.23.0"}
+{"time":"2025-11-20T06:50:49.218297121Z","level":"INFO","msg":"stream: created new stream","id":"gua7vrp0"}
+{"time":"2025-11-20T06:50:49.218382231Z","level":"INFO","msg":"handler: started","stream_id":"gua7vrp0"}
+{"time":"2025-11-20T06:50:49.21854694Z","level":"INFO","msg":"stream: started","id":"gua7vrp0"}
+{"time":"2025-11-20T06:50:49.218577027Z","level":"INFO","msg":"sender: started","stream_id":"gua7vrp0"}
+{"time":"2025-11-20T06:50:49.218572218Z","level":"INFO","msg":"writer: started","stream_id":"gua7vrp0"}
+{"time":"2025-11-20T08:52:40.450840067Z","level":"INFO","msg":"stream: closing","id":"gua7vrp0"}
