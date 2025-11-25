@@ -414,15 +414,11 @@ def clip_pretraining(train_dataset, test_dataset, train_features, save_dir: str,
         test_loss = np.zeros(n_cameras)
         test_loss_sums = defaultdict(float)
 
-        topk_sums = defaultdict(float)
-        total_samples = 0
         all_embeddings = []
         all_time_ids = []
-        all_modality_labels = []
+        all_key_labels = []
         time_key_to_id = {}
-        time_id_to_pair = {}
         next_time_id = 0
-        sample_counter = 0
 
         with torch.no_grad():
             for batch_idx, batch in enumerate(test_loader):
@@ -433,7 +429,32 @@ def clip_pretraining(train_dataset, test_dataset, train_features, save_dir: str,
                     batch[key] = v.to(args.device) if isinstance(v, torch.Tensor) else v
                     if key != k:
                         del batch[k]
-            
+                
+                # Extract indices for t-SNE labeling
+                B = batch[camera_keys[0]].shape[0]
+                if "dataset_index" in batch:
+                    dataset_indices = batch["dataset_index"].detach().cpu().numpy()
+                else:
+                    dataset_indices = np.zeros(B, dtype=np.int32)
+                if "frame_index" in batch:
+                    frame_indices = batch["frame_index"].detach().view(-1).cpu().numpy().astype(np.int64)
+                else:
+                    frame_indices = np.arange(sample_counter, sample_counter + B, dtype=np.int64)
+                if "episode_index" in batch:
+                    episode_indices = batch["episode_index"].detach().view(-1).cpu().numpy().astype(np.int64)
+                else:
+                    episode_indices = np.zeros(B, dtype=np.int64)
+                
+                time_ids = np.empty(B, dtype=np.int64)
+                for idx_item, (ep_idx, frame_idx) in enumerate(zip(episode_indices, frame_indices)):
+                    key = (int(ep_idx), int(frame_idx))
+                    if key not in time_key_to_id:
+                        time_key_to_id[key] = next_time_id
+                        time_id_to_pair[next_time_id] = key
+                        next_time_id += 1
+                    time_ids[idx_item] = time_key_to_id[key]
+                sample_counter += B
+
                 image_embedding_list = []
                 for key in camera_keys:
                     cam_tensor = batch[key]  # B, C, H, W
@@ -488,6 +509,31 @@ def clip_pretraining(train_dataset, test_dataset, train_features, save_dir: str,
                 test_loss += loss.item()
                 for k, v in batch_loss_dict.items():
                     test_loss_sums[k] += v
+                
+                # Store embeddings for t-SNE visualization (grouped by time step)
+                n_cameras = image_embeddings.shape[1]
+                n_tactile = tactile_embeddings.shape[1]
+                n_carpet = carpet_embeddings.shape[1]
+
+                image_embeddings_np = image_embeddings.detach().cpu().numpy().reshape(B * n_cameras, args.clip_dim)
+                tactile_embeddings_np = tactile_embeddings.detach().cpu().numpy().reshape(B * n_tactile, args.clip_dim)
+                carpet_embeddings_np = carpet_embeddings.detach().cpu().numpy().reshape(B * n_carpet, args.clip_dim)
+                
+                img_time_ids = np.repeat(time_ids, n_cameras)
+                tac_time_ids = np.repeat(time_ids, n_tactile)
+                car_time_ids = np.repeat(time_ids, n_carpet)
+
+                all_embeddings.append(image_embeddings_np)
+                all_time_ids.append(img_time_ids)
+                all_key_labels.append(np.tile(camera_keys, B))
+
+                all_embeddings.append(tactile_embeddings_np)
+                all_time_ids.append(tac_time_ids)
+                all_key_labels.append(np.tile(current_tactile_keys, B))
+
+                all_embeddings.append(carpet_embeddings_np)
+                all_time_ids.append(car_time_ids)
+                all_key_labels.append(np.tile(carpet_keys, B))
         testing_losses[epoch] = test_loss/len(test_loader)
 
         if epoch >= 0:
@@ -497,7 +543,7 @@ def clip_pretraining(train_dataset, test_dataset, train_features, save_dir: str,
                 else:
                     emb = np.concatenate(all_embeddings, axis=0)
                     time_labels = np.concatenate(all_time_ids, axis=0)
-                    modality_labels = np.concatenate(all_modality_labels, axis=0)
+                    key_labels = np.concatenate(all_key_labels, axis=0)
 
                     unique_time_ids = np.unique(time_labels)
                     if unique_time_ids.size == 0:
@@ -510,7 +556,7 @@ def clip_pretraining(train_dataset, test_dataset, train_features, save_dir: str,
                         mask = np.isin(time_labels, sampled_time_ids)
                         emb = emb[mask]
                         time_labels = time_labels[mask]
-                        modality_labels = modality_labels[mask]
+                        key_labels = key_labels[mask]
 
                         if emb.shape[0] < 2:
                             logging.warning("Not enough sampled embeddings for t-SNE, skipping.")
@@ -527,6 +573,12 @@ def clip_pretraining(train_dataset, test_dataset, train_features, save_dir: str,
                             color_palette = plt.cm.tab20(np.linspace(0, 1, len(sampled_time_ids)))
                             time_handles = []
 
+                            def get_marker(key):
+                                if "carpet" in key: return "s" # square
+                                if "tactile" in key: return "x" # x
+                                if "qpos" in key: return "*" # star
+                                return "o" # circle (camera)
+
                             for idx_time, time_id in enumerate(sampled_time_ids):
                                 color = color_palette[idx_time % len(color_palette)]
                                 time_mask = time_labels == time_id
@@ -537,38 +589,35 @@ def clip_pretraining(train_dataset, test_dataset, train_features, save_dir: str,
                                     f"ep{ep_idx}_frame{frame_idx}" if ep_idx is not None else f"time_{time_id}"
                                 )
 
-                                image_mask = time_mask & (modality_labels == 0)
-                                if np.any(image_mask):
+                                # Plot each key type with specific marker
+                                current_keys = key_labels[time_mask]
+                                current_emb = emb_2d[time_mask]
+                                
+                                unique_keys_in_batch = np.unique(current_keys)
+                                for key in unique_keys_in_batch:
+                                    key_mask = current_keys == key
+                                    marker = get_marker(key)
                                     plt.scatter(
-                                        emb_2d[image_mask, 0],
-                                        emb_2d[image_mask, 1],
-                                        s=8,
+                                        current_emb[key_mask, 0],
+                                        current_emb[key_mask, 1],
+                                        s=30 if marker == "*" else 15,
                                         label=None,
-                                        alpha=0.7,
+                                        alpha=0.8,
                                         color=color,
-                                        marker="o",
-                                    )
-                                tactile_mask = time_mask & (modality_labels == 1)
-                                if np.any(tactile_mask):
-                                    plt.scatter(
-                                        emb_2d[tactile_mask, 0],
-                                        emb_2d[tactile_mask, 1],
-                                        s=12,
-                                        label=None,
-                                        alpha=0.9,
-                                        color=color,
-                                        marker="x",
+                                        marker=marker,
                                     )
 
                                 time_handles.append(Line2D([], [], marker="o", linestyle="", color=color, label=time_label))
 
                             modality_handles = [
-                                Line2D([], [], marker="o", linestyle="", color="black", label="image"),
-                                Line2D([], [], marker="x", linestyle="", color="black", label="tactile"),
+                                Line2D([], [], marker="o", linestyle="", color="black", label="Camera"),
+                                Line2D([], [], marker="x", linestyle="", color="black", label="Tactile"),
+                                Line2D([], [], marker="s", linestyle="", color="black", label="Carpet"),
+                                Line2D([], [], marker="*", linestyle="", color="black", label="QPos"),
                             ]
-
-                            handles, labels = plt.gca().get_legend_handles_labels()
-                            plt.legend(handles, labels, loc='upper right', fontsize=8)
+                            
+                            # Combine handles: Modality types first, then Time colors
+                            plt.legend(handles=modality_handles + time_handles, loc='upper right', fontsize=8, ncol=2)
                             buf = io.BytesIO()
                             plt.savefig(buf, format="png", bbox_inches="tight")
                             buf.seek(0)
