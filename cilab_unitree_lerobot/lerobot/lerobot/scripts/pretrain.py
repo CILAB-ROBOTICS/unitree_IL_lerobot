@@ -28,28 +28,37 @@ from lerobot.common.datasets.lerobot_dataset import LeRobotDataset, MultiLeRobot
 from lerobot.configs import parser
 
 def accuracy(embedding1: torch.Tensor, embedding2: torch.Tensor, topk=(1, 5, 10)):
+    """
+    Computes top-k accuracy for both directions (1->2 and 2->1).
+    Optimized to compute similarity matrix and top-k indices only once.
+    Handles cases where batch size < k gracefully.
+    """
     device = embedding1.device
     B = embedding1.size(0)
-    targets = torch.arange(B, device=device)  
+    targets = torch.arange(B, device=device).view(-1, 1)
 
     sim_1to2 = embedding1 @ embedding2.T
-    sim_2to1 = embedding2 @ embedding1.T
 
     metrics = {}
+    max_k = max(topk)
+    k_eff = min(max_k, B)
+
+    _, topk_indices_1to2 = sim_1to2.topk(k_eff, dim=1, largest=True, sorted=True)
+    _, topk_indices_2to1 = sim_1to2.t().topk(k_eff, dim=1, largest=True, sorted=True)
 
     for k in topk:
-        k_eff = min(k, B)
+        if B < k:
+            logging.warning(f"Requested top-{k} but batch size is {B}. Using top-{B} instead.")
 
-        if k_eff < k:
-            logging.warning(f"Requested top-{k} but batch size is {B}. ")
-            continue
+        current_k = min(k, B)
 
-        topk_1to2 = sim_1to2.topk(k_eff, dim=-1).indices  # (B, k_eff)
-        correct_1to2 = (topk_1to2 == targets.unsqueeze(1)).any(dim=-1)  # (B,)
+        indices_1to2_k = topk_indices_1to2[:, :current_k]
+        indices_2to1_k = topk_indices_2to1[:, :current_k]
+
+        correct_1to2 = (indices_1to2_k == targets).any(dim=1)
+        correct_2to1 = (indices_2to1_k == targets).any(dim=1)
+
         metrics[f"top{k}_1to2"] = correct_1to2.float().mean().item()
-
-        topk_2to1 = sim_2to1.topk(k_eff, dim=-1).indices
-        correct_2to1 = (topk_2to1 == targets.unsqueeze(1)).any(dim=-1)
         metrics[f"top{k}_2to1"] = correct_2to1.float().mean().item()
 
     return metrics
@@ -135,7 +144,7 @@ class ClipProjectionHead(nn.Module):
             x = F.normalize(x, dim=-1)
 
         return x
-
+        
 def modified_resnet18(weights=None, features_per_group=16) -> nn.Module:
     """
     Get a resnet18 model with all BatchNorm layers replaced with GroupNorm.
@@ -151,6 +160,23 @@ def modified_resnet18(weights=None, features_per_group=16) -> nn.Module:
     # replace all BatchNorm with GroupNorm
     resnet18 = replace_bn_with_gn(resnet18, features_per_group=features_per_group)
     return resnet18   
+
+def modified_cnn(out_dim=512) -> nn.Module:
+    """
+    CNN for tactile encoding.
+    """
+    return nn.Sequential(
+        nn.Conv2d(3, 32, kernel_size=3, padding=1),
+        nn.BatchNorm2d(32),
+        nn.ReLU(),
+        nn.Conv2d(32, 64, kernel_size=3, padding=1, stride=2),  # downsample but keep spatial
+        nn.BatchNorm2d(64),
+        nn.ReLU(),
+        nn.Conv2d(64, 128, kernel_size=3, padding=1),
+        nn.BatchNorm2d(128),
+        nn.ReLU(),
+        nn.Conv2d(128, out_dim, kernel_size=1),  # project to model dim
+    )
 
 def clip_loss(image_embeddings:torch.Tensor, tactile_embeddings:torch.Tensor, target_matrix:torch.Tensor, logit_scale = 1.0, visualize = False):
 
@@ -192,23 +218,43 @@ def clip_pretraining(train_dataset, test_dataset, train_features, save_dir: str,
 
     features = train_features
     camera_keys = [k for k in features if k.startswith("observation.images.") and "tactile" not in k and not k.endswith("carpet_0")]
-    tactile_keys = [k for k in features if k.startswith("observation.images.") and "tactile" in k or k.endswith("carpet_0")]
+    tactile_keys = [k for k in features if k.startswith("observation.images.") and "tactile" in k and not k.endswith("carpet_0")]
+    carpet_keys = [k for k in features if k.endswith("carpet_0")]
 
-    camera_keys = [k for k in camera_keys if "cam_left_high" not in k]
-    tactile_keys = [k for k in tactile_keys if "carpet_0" in k]
+    camera_keys  = [k.replace(".", "_") for k in camera_keys]
+    tactile_keys = [k.replace(".", "_") for k in tactile_keys]
+    carpet_keys  = [k.replace(".", "_") for k in carpet_keys]
 
     n_cameras = len(camera_keys)
-    
-    vision_encoder = modified_resnet18(weights=None, features_per_group=args.features_per_group).to(args.device)
-    vision_projection = ClipProjectionHead(out_dim=args.clip_dim).to(args.device)
+   
+    # Camera Encoders
+    vision_encoders = nn.ModuleDict()
+    vision_projections = nn.ModuleDict()
+    for key in camera_keys:
+        vision_encoders[key] = modified_resnet18(weights=None, features_per_group=args.features_per_group).to(args.device)
+        vision_projections[key] = ClipProjectionHead(out_dim=args.clip_dim).to(args.device)
 
-    tactile_encoder = modified_resnet18(weights=None, features_per_group=args.features_per_group).to(args.device)
-    tactile_projection = ClipProjectionHead(out_dim=args.clip_dim).to(args.device)
+    # Tactile Encoder
+    tactile_encoders = nn.ModuleDict()
+    tactile_projections = nn.ModuleDict()
+    for key in tactile_keys:
+        tactile_encoders[key] = modified_cnn(out_dim=512).to(args.device)
+        tactile_projections[key] = ClipProjectionHead(out_dim=args.clip_dim).to(args.device)
 
-    optim_params = [{"params": tactile_encoder.parameters(), "lr": args.resnet_lr},
-                    {"params": tactile_projection.parameters(), "lr": args.projection_lr},
-                    {"params": vision_encoder.parameters(), "lr": args.resnet_lr},
-                    {"params": vision_projection.parameters(), "lr": args.projection_lr},]
+    # Carpet Encoder
+    carpet_encoder = modified_resnet18(weights=None, features_per_group=args.features_per_group).to(args.device)
+    carpet_projection = ClipProjectionHead(out_dim=args.clip_dim).to(args.device)
+
+    optim_params = [{"params": carpet_encoder.parameters(), "lr": args.resnet_lr},
+                    {"params": carpet_projection.parameters(), "lr": args.projection_lr},]
+    for encoder in vision_encoders.values():
+        optim_params.append({"params": encoder.parameters(), "lr": args.resnet_lr})
+    for projection in vision_projections.values():
+        optim_params.append({"params": projection.parameters(), "lr": args.projection_lr})
+    for encoder in tactile_encoders.values():
+        optim_params.append({"params": encoder.parameters(), "lr": args.resnet_lr})
+    for projection in tactile_projections.values():
+        optim_params.append({"params": projection.parameters(), "lr": args.projection_lr})
     optimizer = torch.optim.Adam(optim_params)
     
     training_losses = np.empty([args.n_epochs, n_cameras])
@@ -220,37 +266,62 @@ def clip_pretraining(train_dataset, test_dataset, train_features, save_dir: str,
     for epoch in tqdm(range(args.n_epochs)): # train the model
         training_loss = np.zeros(n_cameras)
 
-        tactile_encoder.train()
-        tactile_projection.train()
-        vision_encoder.train()
-        vision_projection.train()
+        carpet_encoder.train()
+        carpet_projection.train()
+        for encoder in vision_encoders.values():
+            encoder.train()
+        for projection in vision_projections.values():
+            projection.train()
+        for encoder in tactile_encoders.values():
+            encoder.train()
+        for projection in tactile_projections.values():
+            projection.train()
 
         for batch_idx, batch in enumerate(train_loader):
-            for k, v in batch.items():
-                if isinstance(v, torch.Tensor):
-                    batch[k] = v.to(args.device, non_blocking=True)
+            train_topk_sums = defaultdict(float)
+            total_samples = 0
+            sample_counter = 0
 
-            cam_tensors = [batch[k] for k in camera_keys] # n_cameras, C, H, W 
-            images = torch.stack(cam_tensors, dim=1) # B, N, C, H, W
+            keys = list(batch.keys())
+            for k in keys:
+                v = batch[k]
+                key = k.replace(".", "_")
+                batch[key] = v.to(args.device) if isinstance(v, torch.Tensor) else v
+                if key != k:
+                    del batch[k]
 
-            tac_tensors = [batch[k] for k in tactile_keys]  
-            tactiles = torch.stack(tac_tensors, dim=1) # 1, 1, 3, 32, 32
+            image_embedding_list = []
+            for key in camera_keys:
+                cam_tensor = batch[key]  # B, C, H, W
+                out = vision_encoders[key](cam_tensor)
+                out = vision_projections[key](out)
+                image_embedding_list.append(out)
+            image_embeddings = torch.stack(image_embedding_list, dim=1)  # B, N_cameras, D
+        
+            tactile_feat_list = []
+            for key in tactile_keys:
+                tac_tensor = batch[key]  # B, C, H, W 
+                out = tactile_encoders[key](tac_tensor) 
+                out = tactile_projections[key](out)
+                tactile_feat_list.append(out)
+            tactile_embeddings = torch.stack(tactile_feat_list, dim=1)  # B, N_tactile, D
 
-            images = images.to(args.device)
-            tactiles = tactiles.to(args.device)
+            car_tensors = [batch[k] for k in carpet_keys]   # list of B, C, H, W 
+            carpets = torch.stack(car_tensors, dim=1)       # B, N_carpet, C, H, W
+            B, Ncarpet, C, H, W = carpets.shape
+            carpets = carpets.view(-1, C, H, W)
+            carpet_emb = carpet_projection(carpet_encoder(carpets))
+            carpet_embeddings = carpet_emb.view(B, Ncarpet, args.clip_dim)
 
-            B, n_cameras, C, H, W = images.shape
-            images = images.view(-1, C, H, W)
-            image_embeddings = vision_projection(vision_encoder(images))
-            image_embeddings = image_embeddings.view(B, n_cameras, args.clip_dim) # 1, 1, 512
-
-            B, n_tactile, C, H, W = tactiles.shape
-            tactiles = tactiles.view(-1, C, H, W)
-            tactile_embeddings = tactile_projection(tactile_encoder(tactiles))
-            tactile_embeddings = tactile_embeddings.view(B, n_tactile, args.clip_dim) # 1, 1, 512
-
+            '''
+            train_batch_topk = accuracy(image_embeddings.squeeze(1), carpet_embeddings.squeeze(1), topk=(1, 5, 10))
+            for k, v in train_batch_topk.items():
+                train_topk_sums[k] += v * B
+            total_samples += B
+            sample_counter += B
+            '''
             # calculate target matrix
-            clip_N = n_cameras + n_tactile
+            clip_N = image_embeddings.shape[1] + tactile_embeddings.shape[1] + carpet_embeddings.shape[1]
             target_matrix = torch.eye(clip_N).to(args.device)
 
             if batch_idx == 0 and epoch%args.plot_freq == 0: # visualize the first batch in each epoch
@@ -277,6 +348,17 @@ def clip_pretraining(train_dataset, test_dataset, train_features, save_dir: str,
             loss.mean().backward()
             optimizer.step()
         training_losses[epoch] = training_loss/len(train_loader)
+
+        train_epoch_topk = {k: (v / total_samples) for k, v in train_topk_sums.items()}
+
+        # Log metrics to W&B
+        if args.wandb_enable:
+            log_dict = {}
+            for k, v in train_epoch_topk.items():
+                direction = "embedding1 to embedding2" if "1to2" in k else "embedding2 to embedding1"
+                metric_name = k.split('_')[0]
+                log_dict[f"train/{metric_name}: {direction}"] = v
+            wandb.log(log_dict)
 
         # test the model
         tactile_encoder.eval()
@@ -566,7 +648,6 @@ def run_clip_pretraining(args):
     else:
         dataset_list = [LeRobotDataset(repo_id=d) for d in test_dataset_ids]
         test_dataset = ConcatDataset(dataset_list)
-        test_features = dataset_list[0].features
 
     desired_dir = os.path.join(args.save_dir, run_name)
     save_run_dir = desired_dir
@@ -608,7 +689,7 @@ if __name__ == "__main__":
     parser.add_argument('--projection_lr', type=float, default=1e-4, help='Learning rate for the projection head')
     parser.add_argument('--plot_freq', type=int, default=1, help='Frequency (in epochs) of similarity plot logging')
     parser.add_argument('--save_freq', type=int, default=100, help='Frequency (in epochs) of saving checkpoints')
-    parser.add_argument('--tsne_time_samples', type=int, default=20, help='Number of unique time steps to visualize in t-SNE')
+    parser.add_argument('--tsne_time_samples', type=int, default=200, help='Number of unique time steps to visualize in t-SNE')
     parser.add_argument('--tsne_seed', type=int, default=42, help='Random seed used for t-SNE time sampling')
 
     parser.add_argument('--save_dir', type=str, default='/workspace/clip_pretrain/clip_models/', help='Directory to save trained CLIP models')
