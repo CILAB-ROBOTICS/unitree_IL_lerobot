@@ -327,8 +327,23 @@ def clip_pretraining(train_dataset, test_dataset, train_features, save_dir: str,
     carpet_encoder = modified_resnet18(weights=None, features_per_group=args.features_per_group).to(args.device)
     carpet_projection = ClipProjectionHead(out_dim=args.clip_dim).to(args.device)
 
+    # State Encoder (QPos)
+    if "observation.state" in features:
+        state_dim = features["observation.state"]["shape"][0]
+        state_encoder = nn.Sequential(
+            nn.Linear(state_dim, 256),
+            nn.ReLU(),
+            nn.Linear(256, args.clip_dim),
+            nn.LayerNorm(args.clip_dim) # Optional: normalize like CLIP tokens
+        ).to(args.device)
+    else:
+        state_encoder = None
+        logging.warning("observation.state not found in features. QPos integration skipped.")
+
     optim_params = [{"params": carpet_encoder.parameters(), "lr": args.resnet_lr},
                     {"params": carpet_projection.parameters(), "lr": args.projection_lr},]
+    if state_encoder:
+        optim_params.append({"params": state_encoder.parameters(), "lr": args.projection_lr}) # Use projection LR for MLP
     for encoder in vision_encoders.values():
         optim_params.append({"params": encoder.parameters(), "lr": args.resnet_lr})
     for projection in vision_projections.values():
@@ -351,6 +366,8 @@ def clip_pretraining(train_dataset, test_dataset, train_features, save_dir: str,
 
         carpet_encoder.train()
         carpet_projection.train()
+        if state_encoder:
+            state_encoder.train()
         for encoder in vision_encoders.values():
             encoder.train()
         for projection in vision_projections.values():
@@ -381,29 +398,24 @@ def clip_pretraining(train_dataset, test_dataset, train_features, save_dir: str,
                 image_embedding_list.append(out)
             image_embeddings = torch.stack(image_embedding_list, dim=1)  # B, N_cameras, D
         
-            all_2d_features = []
-            all_2d_pos_embeds = []
             encoder_cam_feat_pos_embed = ACTSinusoidalPositionEmbedding2d(args.clip_dim // 2)
-
+            tactile_feat_list = []
             for key in tactile_keys:
                 tac_tensor = batch[key]                     # (B, C, H, W)
-
                 tac_features = tactile_encoders[key](tac_tensor) # (B, D, Hf, Wf)
                 tac_pos_embed = encoder_cam_feat_pos_embed(tac_features)  # (B, D, Hf, Wf)
+                global_feat = tactile_projections[key](tac_features) # (B, out_dim)
+                tactile_feat_list.append(global_feat)
+            
+            tactile_embeddings = torch.stack(tactile_feat_list, dim=1) # (B, N_tactile, D)
 
-                B, D, Hf, Wf = tac_features.shape
-                feat_flat = tac_features.permute(2,3,0,1).reshape(Hf*Wf, B, D)
-                #pos_flat  = tac_pos_embed.permute(2,3,0,1).reshape(Hf*Wf, B, D)
-
-                feat_flat = tactile_projections[key](feat_flat)  # (Npix, B, D)
-
-                all_2d_features.append(feat_flat)
-                all_2d_pos_embeds.append(tac_pos_embed)
-
-            tokens_2d = torch.cat(all_2d_features, dim=0)       # (TotalPixels, B, D)
-            pos_embed_2d = torch.cat(all_2d_pos_embeds, dim=0)  # (TotalPixels, B, D)
-
-            # 이후에 여기에 다 qpos 구해서 넣기
+            # Integrate QPos
+            current_tactile_keys = list(tactile_keys)
+            if state_encoder is not None and "observation.state" in batch:
+                qpos = batch["observation.state"] # (B, state_dim)
+                qpos_emb = state_encoder(qpos)    # (B, D)
+                tactile_embeddings = torch.cat([tactile_embeddings, qpos_emb.unsqueeze(1)], dim=1) # (B, N_tactile+1, D)
+                current_tactile_keys.append("qpos")
 
             car_tensors = [batch[k] for k in carpet_keys]   # list of B, C, H, W 
             carpets = torch.stack(car_tensors, dim=1)       # B, N_carpet, C, H, W
@@ -415,7 +427,7 @@ def clip_pretraining(train_dataset, test_dataset, train_features, save_dir: str,
             # calculate loss
             if batch_idx == 0 and epoch%args.plot_freq == 0: # visualize the first batch in each epoch
                 loss, plot_maps, batch_loss_dict = clip_loss(image_embeddings, tactile_embeddings, carpet_embeddings, visualize=True,
-                                                             camera_names=camera_keys, tactile_names=tactile_keys, carpet_names=carpet_keys)
+                                                             camera_names=camera_keys, tactile_names=current_tactile_keys, carpet_names=carpet_keys)
                 try:
                     if args.wandb_enable:
                         plt.imshow(plot_maps)
@@ -432,7 +444,7 @@ def clip_pretraining(train_dataset, test_dataset, train_features, save_dir: str,
                     raise
             else:
                 loss, _, batch_loss_dict = clip_loss(image_embeddings, tactile_embeddings, carpet_embeddings, visualize=False,
-                                                     camera_names=camera_keys, tactile_names=tactile_keys, carpet_names=carpet_keys)
+                                                     camera_names=camera_keys, tactile_names=current_tactile_keys, carpet_names=carpet_keys)
 
             training_loss += loss.item()
             for k, v in batch_loss_dict.items():
@@ -462,6 +474,8 @@ def clip_pretraining(train_dataset, test_dataset, train_features, save_dir: str,
         # test the model
         carpet_encoder.eval()
         carpet_projection.eval()
+        if state_encoder:
+            state_encoder.eval()
         for encoder in vision_encoders.values():
             encoder.eval()
         for projection in vision_projections.values():
@@ -539,7 +553,15 @@ def clip_pretraining(train_dataset, test_dataset, train_features, save_dir: str,
                 tactile_embeddings = tactile_projections[tactile_keys[0]](tactile_encoders[tactile_keys[0]](tactiles)) # Assuming all tactile encoders are the same
                 tactile_embeddings = tactile_embeddings.view(B, n_tactile, args.clip_dim) # 1, 1, 512
 
-                batch_topk = accuracy(image_embeddings.squeeze(1), tactile_embeddings.squeeze(1), topk=(1, 5, 10))
+                # Integrate QPos (Test Loop)
+                current_test_tactile_keys = list(test_tactile_keys)
+                if state_encoder is not None and "observation.state" in batch:
+                    qpos = batch["observation.state"]
+                    qpos_emb = state_encoder(qpos)
+                    tactile_embeddings = torch.cat([tactile_embeddings, qpos_emb.unsqueeze(1)], dim=1)
+                    current_test_tactile_keys.append("qpos")
+
+                batch_topk = accuracy(image_embeddings.squeeze(1), tactile_embeddings[:, 0, :], topk=(1, 5, 10)) # Compare with first tactile for topk metric (legacy)
                 for k, v in batch_topk.items():
                     topk_sums[k] += v * B
                 total_samples += B
@@ -561,7 +583,7 @@ def clip_pretraining(train_dataset, test_dataset, train_features, save_dir: str,
 
                 if batch_idx == 0 and epoch%args.plot_freq == 0:
                     loss, plot_maps, batch_loss_dict = clip_loss(image_embeddings, tactile_embeddings, carpet_embeddings, visualize=True, 
-                                                                camera_names=test_camera_keys, tactile_names=test_tactile_keys, carpet_names=carpet_keys)
+                                                                camera_names=test_camera_keys, tactile_names=current_test_tactile_keys, carpet_names=carpet_keys)
                     try:
                         if args.wandb_enable:
                             plt.imshow(plot_maps)
@@ -579,7 +601,7 @@ def clip_pretraining(train_dataset, test_dataset, train_features, save_dir: str,
                         raise
                 else:
                     loss, _, batch_loss_dict = clip_loss(image_embeddings, tactile_embeddings, carpet_embeddings, visualize=False,
-                                                         camera_names=test_camera_keys, tactile_names=test_tactile_keys, carpet_names=carpet_keys)
+                                                         camera_names=test_camera_keys, tactile_names=current_test_tactile_keys, carpet_names=carpet_keys)
                 test_loss += loss.item()
                 for k, v in batch_loss_dict.items():
                     test_loss_sums[k] += v
@@ -703,10 +725,22 @@ def clip_pretraining(train_dataset, test_dataset, train_features, save_dir: str,
         # save the models
         if (epoch+1) % args.save_freq == 0:
             checkpoint_prefix = f'{run_name}_epoch_{epoch}'
-            torch.save(vision_projection.state_dict(), f'{save_dir}/{checkpoint_prefix}_vision_projection.pth')
-            torch.save(tactile_encoder.state_dict(), f'{save_dir}/{checkpoint_prefix}_tactile_encoder.pth')
-            torch.save(tactile_projection.state_dict(), f'{save_dir}/{checkpoint_prefix}_tactile_projection.pth')
-
+            for key in vision_encoders.keys():
+                torch.save(vision_encoders[key].state_dict(), f'{save_dir}/{checkpoint_prefix}_vision_encoder_{key}.pth')
+            for key in vision_projections.keys():
+                torch.save(vision_projections[key].state_dict(), f'{save_dir}/{checkpoint_prefix}_vision_projection_{key}.pth')
+            for key in tactile_encoders.keys():
+                torch.save(tactile_encoders[key].state_dict(), f'{save_dir}/{checkpoint_prefix}_tactile_encoder_{key}.pth')
+            for key in tactile_projections.keys():
+                torch.save(tactile_projections[key].state_dict(), f'{save_dir}/{checkpoint_prefix}_tactile_projection_{key}.pth')
+            torch.save(carpet_encoder.state_dict(), f'{save_dir}/{checkpoint_prefix}_carpet_encoder.pth')
+            torch.save(carpet_projection.state_dict(), f'{save_dir}/{checkpoint_prefix}_carpet_projection.pth')
+            if state_encoder:
+                torch.save(state_encoder.state_dict(), f'{save_dir}/{checkpoint_prefix}_state_encoder.pth')
+            
+            # save the optimizer
+            torch.save(optimizer.state_dict(), f'{save_dir}/{checkpoint_prefix}_optimizer.pth')
+    
 def run_clip_pretraining(args):
     # argparse with nargs='+' already returns a list
     train_dataset_ids = args.train_dataset_id
