@@ -384,21 +384,24 @@ def clip_pretraining(train_dataset, test_dataset, train_features, save_dir: str,
             all_2d_features = []
             all_2d_pos_embeds = []
             encoder_cam_feat_pos_embed = ACTSinusoidalPositionEmbedding2d(args.clip_dim // 2)
+
             for key in tactile_keys:
-                tac_tensor = batch[key] # (B, C, H, W)
-                tac_features = tactile_encoders[key](tac_tensor)
-                tac_features = tactile_projections[key](tac_features)
-                tac_pos_embed = encoder_cam_feat_pos_embed(tac_features) 
+                tac_tensor = batch[key]                     # (B, C, H, W)
+
+                tac_features = tactile_encoders[key](tac_tensor) # (B, D, Hf, Wf)
+                tac_pos_embed = encoder_cam_feat_pos_embed(tac_features)  # (B, D, Hf, Wf)
+
                 B, D, Hf, Wf = tac_features.shape
-                feat_flat = tac_features.permute(2, 3, 0, 1).reshape(Hf * Wf, B, D)
-                pos_flat  = tac_pos_embed.permute(2, 3, 0, 1).reshape(Hf * Wf, B, D)
-            
+                feat_flat = tac_features.permute(2,3,0,1).reshape(Hf*Wf, B, D)
+                #pos_flat  = tac_pos_embed.permute(2,3,0,1).reshape(Hf*Wf, B, D)
+
+                feat_flat = tactile_projections[key](feat_flat)  # (Npix, B, D)
+
                 all_2d_features.append(feat_flat)
-                all_2d_pos_embeds.append(pos_flat)
-            tokens_2d = torch.cat(all_2d_features, dim=0)   # (NPIX_total, B, D)
-            pos_embed_2d = torch.cat(all_2d_pos_embeds, dim=0)  # (NPIX_total, B, D)
-            print(tokens_2d.shape)
-            print(pos_embed_2d.shape)
+                all_2d_pos_embeds.append(tac_pos_embed)
+
+            tokens_2d = torch.cat(all_2d_features, dim=0)       # (TotalPixels, B, D)
+            pos_embed_2d = torch.cat(all_2d_pos_embeds, dim=0)  # (TotalPixels, B, D)
 
             # 이후에 여기에 다 qpos 구해서 넣기
 
