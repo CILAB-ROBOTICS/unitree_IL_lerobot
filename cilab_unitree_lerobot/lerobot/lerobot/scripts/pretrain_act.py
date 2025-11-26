@@ -661,6 +661,8 @@ def train(cfg: TrainPipelineConfig):
             loss.backward()
             optimizer.step()
 
+            wandb_metrics = {}
+
             if step % 10 == 0:
                 acc_metrics = accuracy(proj_encoder, proj_carpet, topk=(1, 5, 10))
                 
@@ -672,7 +674,6 @@ def train(cfg: TrainPipelineConfig):
                 avg_pos_sim = torch.diag(sim_matrix).mean().item()
                 
                 # Avg Negative Similarity (Off-diagonal)
-                # Sum of all elements minus sum of diagonal, divided by number of off-diagonal elements
                 if B > 1:
                     avg_neg_sim = (sim_matrix.sum() - torch.diag(sim_matrix).sum()) / (B * B - B)
                     avg_neg_sim = avg_neg_sim.item()
@@ -686,27 +687,45 @@ def train(cfg: TrainPipelineConfig):
                     log_msg += f", {k} = {v:.1f}%"
                 #logging.info(log_msg)
                 
-                # Log to WandB
+                # Collect Train Metrics
                 if cfg.wandb.enable:
-                    wandb_metrics = {
+                    wandb_metrics.update({
                         "train/loss": loss.item(),
                         "train/avg_pos_sim": avg_pos_sim,
                         "train/avg_neg_sim": avg_neg_sim,
-                    }
+                    })
                     for k, v in acc_metrics.items():
                         wandb_metrics[f"train/{k}"] = v
                     
-                    wandb.log(wandb_metrics, step=step)
+                # Save Heatmap (don't log yet)
+                heatmap_path = save_similarity_heatmap(sim_matrix, step, cfg.output_dir, use_wandb=False)
+                if cfg.wandb.enable:
+                     wandb_metrics["train/similarity_matrix"] = wandb.Image(heatmap_path)
 
-                # Save and Log Heatmap
-                save_similarity_heatmap(sim_matrix, step, cfg.output_dir, use_wandb=cfg.wandb.enable)
         else:
             if step % 10 == 0:
                 logging.info(f"Step {step}: Carpet embeddings not found, skipping loss calculation.")
         
-        # Validation Loop (every 500 steps)
+        # Validation Loop (every 1000 steps)
         if step > 0 and step % 1000 == 0:
-            validate(policy, val_loader, device, head_encoder, head_carpet, step, cfg)
+            val_metrics, val_heatmap_path = validate(policy, val_loader, device, head_encoder, head_carpet, step, cfg)
+            
+            if cfg.wandb.enable:
+                wandb_metrics.update(val_metrics)
+                if val_heatmap_path:
+                    wandb_metrics["val/similarity_matrix"] = wandb.Image(val_heatmap_path)
+            
+            save_checkpoint(step, cfg.output_dir, head_encoder, head_carpet, optimizer)
+            
+            # Save t-SNE plot
+            if 'proj_encoder' in locals() and 'proj_carpet' in locals():
+                tsne_path = save_tsne_plot(proj_encoder, proj_carpet, step, cfg.output_dir, use_wandb=False)
+                if cfg.wandb.enable:
+                    wandb_metrics["val/tsne_plot"] = wandb.Image(tsne_path)
+
+        # Log to WandB (Once per step)
+        if cfg.wandb.enable and wandb_metrics:
+            wandb.log(wandb_metrics, step=step)
 
     logging.info("End of extraction")
 
