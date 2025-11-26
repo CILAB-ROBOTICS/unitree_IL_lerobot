@@ -8,6 +8,7 @@ from typing import Callable
 from collections import defaultdict
 
 import einops
+import colorsys
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -240,6 +241,16 @@ def clip_loss(image_embeddings:torch.Tensor, tactile_embeddings:torch.Tensor, ca
     '''
     return total_loss / max(num_pairs, 1), visualizations, loss_dict
 
+def generate_colors(n):
+    colors = []
+    for i in range(n):
+        h = i / n                    # evenly spaced hue
+        s = 0.65                     # saturation
+        l = 0.55                     # lightness
+        r, g, b = colorsys.hls_to_rgb(h, l, s)
+        colors.append((r, g, b))
+    return np.array(colors)
+
 def clip_pretraining(train_dataset, test_dataset, train_features, save_dir: str, args):
     if save_dir[-1] == '/':
         save_dir = save_dir[:-1]
@@ -391,7 +402,6 @@ def clip_pretraining(train_dataset, test_dataset, train_features, save_dir: str,
             training_loss += loss.item()
             for k, v in batch_loss_dict.items():
                 train_loss_sums[k] += v
-
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
@@ -418,6 +428,7 @@ def clip_pretraining(train_dataset, test_dataset, train_features, save_dir: str,
         all_time_ids = []
         all_key_labels = []
         time_key_to_id = {}
+        time_id_to_pair = {}
         next_time_id = 0
 
         with torch.no_grad():
@@ -553,6 +564,7 @@ def clip_pretraining(train_dataset, test_dataset, train_features, save_dir: str,
                         num_time_samples = min(args.tsne_time_samples, unique_time_ids.size)
                         sampled_time_ids = rng.choice(unique_time_ids, size=num_time_samples, replace=False)
 
+                        color_palette = generate_colors(len(sampled_time_ids))
                         mask = np.isin(time_labels, sampled_time_ids)
                         emb = emb[mask]
                         time_labels = time_labels[mask]
@@ -570,7 +582,6 @@ def clip_pretraining(train_dataset, test_dataset, train_features, save_dir: str,
                             emb_2d = tsne.fit_transform(emb)
 
                             plt.figure(figsize=(12, 8))
-                            color_palette = plt.cm.tab20(np.linspace(0, 1, len(sampled_time_ids)))
                             time_handles = []
 
                             def get_marker(key):
@@ -580,7 +591,7 @@ def clip_pretraining(train_dataset, test_dataset, train_features, save_dir: str,
                                 return "o" # circle (camera)
 
                             for idx_time, time_id in enumerate(sampled_time_ids):
-                                color = color_palette[idx_time % len(color_palette)]
+                                color = color_palette[idx_time]
                                 time_mask = time_labels == time_id
                                 if not np.any(time_mask):
                                     continue
@@ -617,7 +628,7 @@ def clip_pretraining(train_dataset, test_dataset, train_features, save_dir: str,
                             ]
                             
                             # Combine handles: Modality types first, then Time colors
-                            plt.legend(handles=modality_handles + time_handles, loc='upper right', fontsize=8, ncol=2)
+                            plt.legend(handles=modality_handles, loc='upper right', fontsize=8, ncol=2)
                             buf = io.BytesIO()
                             plt.savefig(buf, format="png", bbox_inches="tight")
                             buf.seek(0)
@@ -694,7 +705,6 @@ def run_clip_pretraining(args):
     start_time = time.time()
     os.makedirs(args.save_dir, exist_ok=True)
 
-
     if len(train_dataset_ids) == 1:
         train_dataset = LeRobotDataset(repo_id=train_dataset_ids[0])
         train_features = train_dataset.features
@@ -724,7 +734,6 @@ def run_clip_pretraining(args):
         f.write(f'test_datasets: {test_dataset_ids}\n')
         f.write(f'test_dataset: {test_dataset}\n')
         f.write(f'trian_features: {train_features}\n')
-        f.write(f'test_features: {test_features}\n')
 
     clip_pretraining(train_dataset, test_dataset, train_features, save_dir=save_run_dir, args=args)
     
@@ -750,7 +759,7 @@ if __name__ == "__main__":
     parser.add_argument('--projection_lr', type=float, default=1e-4, help='Learning rate for the projection head')
     parser.add_argument('--plot_freq', type=int, default=1, help='Frequency (in epochs) of similarity plot logging')
     parser.add_argument('--save_freq', type=int, default=100, help='Frequency (in epochs) of saving checkpoints')
-    parser.add_argument('--tsne_time_samples', type=int, default=200, help='Number of unique time steps to visualize in t-SNE')
+    parser.add_argument('--tsne_time_samples', type=int, default=20, help='Number of unique time steps to visualize in t-SNE')
     parser.add_argument('--tsne_seed', type=int, default=42, help='Random seed used for t-SNE time sampling')
 
     parser.add_argument('--save_dir', type=str, default='/workspace/clip_pretrain/clip_models/', help='Directory to save trained CLIP models')
