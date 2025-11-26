@@ -14,7 +14,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import logging
+import time
 from pprint import pformat
+
+import matplotlib
+matplotlib.use('Agg') # Use non-interactive backend
+import matplotlib.pyplot as plt
+import os
 
 import einops
 import torch
@@ -33,6 +39,26 @@ from lerobot.common.utils.utils import (
 )
 from lerobot.configs import parser
 from lerobot.configs.train import TrainPipelineConfig
+
+
+def save_similarity_heatmap(sim_matrix, step, output_dir):
+    """
+    Saves a heatmap of the similarity matrix.
+    """
+    sim_matrix_np = sim_matrix.detach().cpu().numpy()
+    
+    plt.figure(figsize=(10, 8))
+    plt.imshow(sim_matrix_np, cmap='viridis', interpolation='nearest')
+    plt.colorbar()
+    plt.title(f"Similarity Matrix (Step {step})")
+    plt.xlabel("Carpet Embeddings")
+    plt.ylabel("Encoder Tokens")
+    
+    # Save plot
+    plots_dir = os.path.join(output_dir, "plots")
+    os.makedirs(plots_dir, exist_ok=True)
+    plt.savefig(os.path.join(plots_dir, f"sim_matrix_step_{step:06d}.png"))
+    plt.close()
 
 
 def extract_embeddings(policy, batch, device):
@@ -67,7 +93,7 @@ def extract_embeddings(policy, batch, device):
             nn.Conv2d(64, 128, kernel_size=3, padding=1),
             nn.BatchNorm2d(128),
             nn.ReLU(),
-            nn.Conv2d(128, 512, kernel_size=1),
+            nn.Conv2d(128, policy.config.dim_model, kernel_size=1),
         ).to(device)
 
         tokens_2d = None
@@ -157,6 +183,53 @@ def compute_contrastive_loss(emb1, emb2, temperature=0.07):
     return (loss_1 + loss_2) / 2
 
 
+def accuracy(embedding1: torch.Tensor, embedding2: torch.Tensor, topk=(1, 5, 10)):
+    """
+    Computes top-k accuracy for both directions (1->2 and 2->1).
+    """
+    device = embedding1.device
+    B = embedding1.size(0)
+    targets = torch.arange(B, device=device).view(-1, 1)
+
+    # Cosine similarity
+    emb1_norm = torch.nn.functional.normalize(embedding1, dim=-1)
+    emb2_norm = torch.nn.functional.normalize(embedding2, dim=-1)
+    sim_1to2 = emb1_norm @ emb2_norm.T
+
+    metrics = {}
+    max_k = max(topk)
+    k_eff = min(max_k, B)
+
+    _, topk_indices_1to2 = sim_1to2.topk(k_eff, dim=1, largest=True, sorted=True)
+    _, topk_indices_2to1 = sim_1to2.t().topk(k_eff, dim=1, largest=True, sorted=True)
+
+    for k in topk:
+        if B < k:
+            continue
+        
+        current_k = min(k, B)
+        indices_1to2_k = topk_indices_1to2[:, :current_k]
+        indices_2to1_k = topk_indices_2to1[:, :current_k]
+
+        correct_1to2 = (indices_1to2_k == targets).any(dim=1)
+        correct_2to1 = (indices_2to1_k == targets).any(dim=1)
+
+        metrics[f"top{k}_1to2"] = correct_1to2.float().mean().item() * 100
+        metrics[f"top{k}_2to1"] = correct_2to1.float().mean().item() * 100
+
+    return metrics
+
+
+def compute_similarity_matrix(emb1, emb2):
+    """
+    Computes the cosine similarity matrix between two batches of embeddings.
+    Returns: (Batch_Size, Batch_Size) matrix where [i, j] is sim(emb1[i], emb2[j])
+    """
+    emb1_norm = torch.nn.functional.normalize(emb1, dim=-1)
+    emb2_norm = torch.nn.functional.normalize(emb2, dim=-1)
+    return emb1_norm @ emb2_norm.T
+
+
 @parser.wrap()
 def train(cfg: TrainPipelineConfig):
     cfg.validate()
@@ -170,6 +243,17 @@ def train(cfg: TrainPipelineConfig):
     torch.backends.cudnn.benchmark = True
     torch.backends.cuda.matmul.allow_tf32 = True
 
+    # Initialize WandB
+    if cfg.wandb.enable:
+        wandb.init(
+            project=cfg.wandb.project,
+            entity=cfg.wandb.entity,
+            name=cfg.wandb.run_name,
+            config=cfg.to_dict(),
+            job_type="pretrain_act",
+            notes=cfg.wandb.notes,
+        )
+
     logging.info("Creating dataset")
     dataset = make_dataset(cfg)
 
@@ -182,14 +266,12 @@ def train(cfg: TrainPipelineConfig):
     policy.to(device)
 
     # Initialize Projection Heads
-    # Assuming the model dimension is policy.config.dim_model (usually 512)
     embed_dim = policy.config.dim_model
-    proj_dim = 256 # Output dimension for contrastive learning
+    proj_dim = 256 
     
     head_encoder = ProjectionHead(embed_dim, proj_dim).to(device)
     head_carpet = ProjectionHead(embed_dim, proj_dim).to(device)
     
-    # Optimizer for projection heads (and potentially backbones if we unfreeze them)
     optimizer = torch.optim.Adam(
         list(head_encoder.parameters()) + list(head_carpet.parameters()), 
         lr=1e-4
@@ -232,28 +314,57 @@ def train(cfg: TrainPipelineConfig):
         encoder_tokens, encoder_pos, carpet_embeddings = extract_embeddings(policy, batch, device)
         
         if carpet_embeddings is not None:
-            # 1. Pooling: (Sequence, Batch, Dim) -> (Batch, Dim)
-            # We use Global Average Pooling over the sequence dimension (dim=0)
-            # encoder_tokens: (Seq, Batch, Dim)
-            # carpet_embeddings: (Seq_Carpet, Batch, Dim)
-            
             feat_encoder = encoder_tokens.mean(dim=0) 
             feat_carpet = carpet_embeddings.mean(dim=0)
 
-            # 2. Projection
             proj_encoder = head_encoder(feat_encoder)
             proj_carpet = head_carpet(feat_carpet)
 
-            # 3. Compute Loss
             loss = compute_contrastive_loss(proj_encoder, proj_carpet)
 
-            # 4. Optimization
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
 
             if step % 10 == 0:
-                logging.info(f"Step {step}: Loss = {loss.item():.4f}")
+                acc_metrics = accuracy(proj_encoder, proj_carpet, topk=(1, 5, 10))
+                
+                # Compute Similarity Stats
+                sim_matrix = compute_similarity_matrix(proj_encoder, proj_carpet)
+                B = sim_matrix.size(0)
+                
+                # Avg Positive Similarity (Diagonal)
+                avg_pos_sim = torch.diag(sim_matrix).mean().item()
+                
+                # Avg Negative Similarity (Off-diagonal)
+                # Sum of all elements minus sum of diagonal, divided by number of off-diagonal elements
+                if B > 1:
+                    avg_neg_sim = (sim_matrix.sum() - torch.diag(sim_matrix).sum()) / (B * B - B)
+                    avg_neg_sim = avg_neg_sim.item()
+                else:
+                    avg_neg_sim = 0.0
+
+                log_msg = f"Step {step}: Loss = {loss.item():.4f}"
+                log_msg += f", Avg Pos Sim: {avg_pos_sim:.4f}, Avg Neg Sim: {avg_neg_sim:.4f}"
+                
+                for k, v in acc_metrics.items():
+                    log_msg += f", {k} = {v:.1f}%"
+                logging.info(log_msg)
+                
+                # Log to WandB
+                if cfg.wandb.enable:
+                    wandb_metrics = {
+                        "train/loss": loss.item(),
+                        "train/avg_pos_sim": avg_pos_sim,
+                        "train/avg_neg_sim": avg_neg_sim,
+                    }
+                    for k, v in acc_metrics.items():
+                        wandb_metrics[f"train/{k}"] = v
+                    
+                    wandb.log(wandb_metrics, step=step)
+
+                # Save and Log Heatmap
+                save_and_log_heatmap(sim_matrix, step, cfg.output_dir, use_wandb=cfg.wandb.enable)
         else:
             if step % 10 == 0:
                 logging.info(f"Step {step}: Carpet embeddings not found, skipping loss calculation.")
