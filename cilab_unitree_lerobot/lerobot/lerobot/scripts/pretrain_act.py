@@ -57,35 +57,18 @@ def extract_embeddings(policy, batch, device):
         tokens_1d = torch.stack(tokens_1d, dim=0)  # (N1D, B, D)
         pos_embed_1d = model.encoder_1d_feature_pos_embed.weight.unsqueeze(1)  # (N1D, 1, D)
 
-        # Ensure tactile_backbone exists if we need it
-        if any("tactile" in key for key in model.config.image_features) and model.tactile_backbone is None:
-             model.tactile_backbone = nn.Sequential(
-                nn.Conv2d(3, 32, kernel_size=3, padding=1),
-                nn.BatchNorm2d(32),
-                nn.ReLU(),
-                nn.Conv2d(32, 64, kernel_size=3, padding=1, stride=2),
-                nn.BatchNorm2d(64),
-                nn.ReLU(),
-                nn.Conv2d(64, 128, kernel_size=3, padding=1),
-                nn.BatchNorm2d(128),
-                nn.ReLU(),
-                nn.Conv2d(128, 512, kernel_size=1),
-            ).to(device)
-
-        # Ensure carpet_backbone exists if we need it
-        if any("carpet" in key for key in model.config.image_features) and not hasattr(model, "carpet_backbone"):
-             model.carpet_backbone = nn.Sequential(
-                nn.Conv2d(3, 32, kernel_size=3, padding=1),
-                nn.BatchNorm2d(32),
-                nn.ReLU(),
-                nn.Conv2d(32, 64, kernel_size=3, padding=1, stride=2),
-                nn.BatchNorm2d(64),
-                nn.ReLU(),
-                nn.Conv2d(64, 128, kernel_size=3, padding=1),
-                nn.BatchNorm2d(128),
-                nn.ReLU(),
-                nn.Conv2d(128, 512, kernel_size=1),
-            ).to(device)
+        tactile_backbone = nn.Sequential(
+            nn.Conv2d(3, 32, kernel_size=3, padding=1),
+            nn.BatchNorm2d(32),
+            nn.ReLU(),
+            nn.Conv2d(32, 64, kernel_size=3, padding=1, stride=2),
+            nn.BatchNorm2d(64),
+            nn.ReLU(),
+            nn.Conv2d(64, 128, kernel_size=3, padding=1),
+            nn.BatchNorm2d(128),
+            nn.ReLU(),
+            nn.Conv2d(128, 512, kernel_size=1),
+        ).to(device)
 
         tokens_2d = None
         pos_embed_2d = None
@@ -94,27 +77,17 @@ def extract_embeddings(policy, batch, device):
         if model.config.image_features and "observation.images" in batch:
             all_2d_features = []
             all_2d_pos_embeds = []
-            carpet_features_list = []
+            carpet_features = []
 
             for img_key, img in zip(model.config.image_features, batch["observation.images"]):
-                if "tactile" in img_key and model.tactile_backbone is not None:
-                    # Use the existing tactile backbone from the model
-                    tac_features = model.tactile_backbone(img)
+                if "tactile" in img_key and tactile_backbone is not None:
+                    tac_features = tactile_backbone(img)
                     tac_pos_embed = model.encoder_cam_feat_pos_embed(tac_features).to(dtype=tac_features.dtype)
-                    
+
                     tac_features = einops.rearrange(tac_features, "b c h w -> (h w) b c")
                     tac_pos_embed = einops.rearrange(tac_pos_embed, "b c h w -> (h w) b c")
                     all_2d_features.append(tac_features)
                     all_2d_pos_embeds.append(tac_pos_embed)
-                
-                elif "carpet" in img_key and hasattr(model, "carpet_backbone"):
-                    # Use the carpet backbone
-                    car_features = model.carpet_backbone(img)
-                    # We don't add carpet features to the main encoder tokens
-                    # Instead, we collect them separately
-                    car_features = einops.rearrange(car_features, "b c h w -> (h w) b c")
-                    carpet_features_list.append(car_features)
-
                 elif "tactile" not in img_key and "carpet" not in img_key and hasattr(model, "backbone"):
                     cam_features = model.backbone(img)["feature_map"]
                     cam_pos_embed = model.encoder_cam_feat_pos_embed(cam_features).to(dtype=cam_features.dtype)
@@ -124,13 +97,19 @@ def extract_embeddings(policy, batch, device):
                     cam_pos_embed = einops.rearrange(cam_pos_embed, "b c h w -> (h w) b c")
                     all_2d_features.append(cam_features)
                     all_2d_pos_embeds.append(cam_pos_embed)
+                elif "carpet" in img_key and hasattr(model, "backbone"):
+                    car_features = model.backbone(img)["feature_map"]
+                    car_features = model.encoder_img_feat_input_proj(car_features)
+
+                    car_features = einops.rearrange(car_features, "b c h w -> (h w) b c")
+                    carpet_features.append(car_features)
 
             if all_2d_features:
                 tokens_2d = torch.cat(all_2d_features, dim=0)
                 pos_embed_2d = torch.cat(all_2d_pos_embeds, dim=0)
             
-            if carpet_features_list:
-                carpet_embeddings = torch.cat(carpet_features_list, dim=0)
+            if carpet_features:
+                carpet_embeddings = torch.cat(carpet_features, dim=0)
 
         if tokens_2d is not None and tokens_2d.numel() > 0:
             encoder_tokens = torch.cat([tokens_1d, tokens_2d], dim=0)
@@ -202,12 +181,6 @@ def train(cfg: TrainPipelineConfig):
 
         encoder_tokens, encoder_pos, carpet_embeddings = extract_embeddings(policy, batch, device)
         
-        if step % 10 == 0:
-            log_msg = f"Step {step}: Embeddings Shape: {encoder_tokens.shape}, Pos Embeds Shape: {encoder_pos.shape}"
-            if carpet_embeddings is not None:
-                log_msg += f", Carpet Embeds Shape: {carpet_embeddings.shape}"
-            logging.info(log_msg)
-
     logging.info("End of extraction")
 
 
