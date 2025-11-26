@@ -21,6 +21,7 @@ import matplotlib
 matplotlib.use('Agg') # Use non-interactive backend
 import matplotlib.pyplot as plt
 import os
+import wandb
 
 import einops
 import torch
@@ -41,10 +42,10 @@ from lerobot.configs import parser
 from lerobot.configs.train import TrainPipelineConfig
 
 
-def save_similarity_heatmap(sim_matrix, step, output_dir):
+def save_similarity_heatmap(sim_matrix, step, output_dir, use_wandb=False):
     """
     Saves a heatmap of the similarity matrix.
-    """
+    """ 
     sim_matrix_np = sim_matrix.detach().cpu().numpy()
     
     plt.figure(figsize=(10, 8))
@@ -59,6 +60,11 @@ def save_similarity_heatmap(sim_matrix, step, output_dir):
     os.makedirs(plots_dir, exist_ok=True)
     plt.savefig(os.path.join(plots_dir, f"sim_matrix_step_{step:06d}.png"))
     plt.close()
+
+    if use_wandb:
+        wandb.log({
+            f"similarity_matrix/step": wandb.Image(os.path.join(plots_dir, f"sim_matrix_step_{step:06d}.png"))
+        })
 
 
 def extract_embeddings(policy, batch, device):
@@ -277,7 +283,7 @@ def validate(policy, val_loader, device, head_encoder, head_carpet, step, cfg):
                 # Save heatmap for the first batch only
                 if i == 0:
                      sim_matrix = compute_similarity_matrix(proj_encoder, proj_carpet)
-                     save_and_log_heatmap(sim_matrix, step, cfg.output_dir, use_wandb=cfg.wandb.enable)
+                     save_similarity_heatmap(sim_matrix, step, cfg.output_dir, use_wandb=cfg.wandb.enable)
 
     if total_samples > 0:
         avg_loss = total_loss / total_samples
@@ -318,7 +324,6 @@ def train(cfg: TrainPipelineConfig):
         wandb.init(
             project=cfg.wandb.project,
             entity=cfg.wandb.entity,
-            name=cfg.wandb.run_name,
             config=cfg.to_dict(),
             job_type="pretrain_act",
             notes=cfg.wandb.notes,
@@ -441,7 +446,7 @@ def train(cfg: TrainPipelineConfig):
                 
                 for k, v in acc_metrics.items():
                     log_msg += f", {k} = {v:.1f}%"
-                logging.info(log_msg)
+                #logging.info(log_msg)
                 
                 # Log to WandB
                 if cfg.wandb.enable:
@@ -456,7 +461,7 @@ def train(cfg: TrainPipelineConfig):
                     wandb.log(wandb_metrics, step=step)
 
                 # Save and Log Heatmap
-                save_and_log_heatmap(sim_matrix, step, cfg.output_dir, use_wandb=cfg.wandb.enable)
+                save_similarity_heatmap(sim_matrix, step, cfg.output_dir, use_wandb=cfg.wandb.enable)
         else:
             if step % 10 == 0:
                 logging.info(f"Step {step}: Carpet embeddings not found, skipping loss calculation.")
