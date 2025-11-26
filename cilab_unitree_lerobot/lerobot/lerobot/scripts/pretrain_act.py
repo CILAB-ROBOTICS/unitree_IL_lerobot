@@ -230,6 +230,76 @@ def compute_similarity_matrix(emb1, emb2):
     return emb1_norm @ emb2_norm.T
 
 
+def validate(policy, val_loader, device, head_encoder, head_carpet, step, cfg):
+    policy.eval()
+    head_encoder.eval()
+    head_carpet.eval()
+    
+    total_loss = 0
+    total_samples = 0
+    metrics_accum = {}
+    
+    # Run validation on a few batches (e.g., 10 batches or full val set)
+    # For speed, let's limit to 50 batches max
+    max_val_batches = 50
+    
+    with torch.no_grad():
+        for i, batch in enumerate(val_loader):
+            if i >= max_val_batches:
+                break
+                
+            for key in batch:
+                if isinstance(batch[key], torch.Tensor):
+                    batch[key] = batch[key].to(device, non_blocking=True)
+
+            encoder_tokens, encoder_pos, carpet_embeddings = extract_embeddings(policy, batch, device)
+            
+            if carpet_embeddings is not None:
+                feat_encoder = encoder_tokens.mean(dim=0) 
+                feat_carpet = carpet_embeddings.mean(dim=0)
+
+                proj_encoder = head_encoder(feat_encoder)
+                proj_carpet = head_carpet(feat_carpet)
+
+                loss = compute_contrastive_loss(proj_encoder, proj_carpet)
+                
+                batch_size = feat_encoder.size(0)
+                total_loss += loss.item() * batch_size
+                total_samples += batch_size
+                
+                # Accumulate accuracy metrics
+                acc_metrics = accuracy(proj_encoder, proj_carpet, topk=(1, 5, 10))
+                for k, v in acc_metrics.items():
+                    if k not in metrics_accum:
+                        metrics_accum[k] = 0.0
+                    metrics_accum[k] += v * batch_size
+
+                # Save heatmap for the first batch only
+                if i == 0:
+                     sim_matrix = compute_similarity_matrix(proj_encoder, proj_carpet)
+                     save_and_log_heatmap(sim_matrix, step, cfg.output_dir, use_wandb=cfg.wandb.enable)
+
+    if total_samples > 0:
+        avg_loss = total_loss / total_samples
+        log_msg = f"Validation Step {step}: Loss = {avg_loss:.4f}"
+        
+        wandb_metrics = {"val/loss": avg_loss}
+        
+        for k in metrics_accum:
+            avg_acc = metrics_accum[k] / total_samples
+            log_msg += f", {k} = {avg_acc:.1f}%"
+            wandb_metrics[f"val/{k}"] = avg_acc
+            
+        logging.info(colored(log_msg, "green"))
+        
+        if cfg.wandb.enable:
+            wandb.log(wandb_metrics, step=step)
+            
+    policy.train()
+    head_encoder.train()
+    head_carpet.train()
+
+
 @parser.wrap()
 def train(cfg: TrainPipelineConfig):
     cfg.validate()
@@ -255,13 +325,25 @@ def train(cfg: TrainPipelineConfig):
         )
 
     logging.info("Creating dataset")
-    dataset = make_dataset(cfg)
+    # Load full dataset first
+    full_dataset = make_dataset(cfg)
+    
+    # Split into Train (90%) and Val (10%)
+    # Note: This simple random split assumes i.i.d samples. 
+    # For robotics, splitting by episodes is better, but LeRobotDataset structure is complex.
+    # We will use a simple random split for now as a starting point.
+    val_ratio = 0.1
+    val_size = int(len(full_dataset) * val_ratio)
+    train_size = len(full_dataset) - val_size
+    train_dataset, val_dataset = torch.utils.data.random_split(full_dataset, [train_size, val_size])
+    
+    logging.info(f"Dataset split: Train={len(train_dataset)}, Val={len(val_dataset)}")
 
     logging.info("Creating policy (for backbone & normalization)")
 
     policy = make_policy(
         cfg=cfg.policy,
-        ds_meta=dataset.meta,
+        ds_meta=full_dataset.meta, # Use meta from full dataset
     )
     policy.to(device)
 
@@ -278,12 +360,12 @@ def train(cfg: TrainPipelineConfig):
     )
 
     logging.info(colored("Output dir:", "yellow", attrs=["bold"]) + f" {cfg.output_dir}")
-    logging.info(f"{dataset.num_frames=} ({format_big_number(dataset.num_frames)})")
+    logging.info(f"{full_dataset.num_frames=} ({format_big_number(full_dataset.num_frames)})")
 
     if hasattr(cfg.policy, "drop_n_last_frames"):
         shuffle = False
         sampler = EpisodeAwareSampler(
-            dataset.episode_data_index,
+            full_dataset.episode_data_index,
             drop_n_last_frames=cfg.policy.drop_n_last_frames,
             shuffle=True,
         )
@@ -291,16 +373,26 @@ def train(cfg: TrainPipelineConfig):
         shuffle = True
         sampler = None
 
-    dataloader = torch.utils.data.DataLoader(
-        dataset,
+    # Create DataLoaders
+    train_loader = torch.utils.data.DataLoader(
+        train_dataset,
         num_workers=cfg.num_workers,
         batch_size=cfg.batch_size,
-        shuffle=shuffle,
-        sampler=sampler,
+        shuffle=True,
+        pin_memory=device.type != "cpu",
+        drop_last=True,
+    )
+    
+    val_loader = torch.utils.data.DataLoader(
+        val_dataset,
+        num_workers=cfg.num_workers,
+        batch_size=cfg.batch_size,
+        shuffle=False,
         pin_memory=device.type != "cpu",
         drop_last=False,
     )
-    dl_iter = cycle(dataloader)
+    
+    dl_iter = cycle(train_loader)
 
     logging.info("Start extracting embeddings...")
 
@@ -344,7 +436,7 @@ def train(cfg: TrainPipelineConfig):
                 else:
                     avg_neg_sim = 0.0
 
-                log_msg = f"Step {step}: Loss = {loss.item():.4f}"
+                log_msg = f"Step {step}: Train Loss = {loss.item():.4f}"
                 log_msg += f", Avg Pos Sim: {avg_pos_sim:.4f}, Avg Neg Sim: {avg_neg_sim:.4f}"
                 
                 for k, v in acc_metrics.items():
@@ -368,6 +460,10 @@ def train(cfg: TrainPipelineConfig):
         else:
             if step % 10 == 0:
                 logging.info(f"Step {step}: Carpet embeddings not found, skipping loss calculation.")
+        
+        # Validation Loop (every 500 steps)
+        if step > 0 and step % 500 == 0:
+            validate(policy, val_loader, device, head_encoder, head_carpet, step, cfg)
 
     logging.info("End of extraction")
 
