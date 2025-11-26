@@ -229,32 +229,45 @@ def train(cfg: TrainPipelineConfig):
                     log_msg += f", {k} = {v:.1f}%"
                 #logging.info(log_msg)
                 
-                # Log to WandB
+                # Collect Train Metrics
                 if cfg.wandb.enable:
-                    wandb_metrics = {
+                    wandb_metrics.update({
                         "train/loss": loss.item(),
                         "train/avg_pos_sim": avg_pos_sim,
                         "train/avg_neg_sim": avg_neg_sim,
-                    }
+                    })
                     for k, v in acc_metrics.items():
                         wandb_metrics[f"train/{k}"] = v
                     
-                    wandb.log(wandb_metrics, step=step)
+                # Save Heatmap (don't log yet)
+                heatmap_path = save_similarity_heatmap(sim_matrix, step, cfg.output_dir, use_wandb=False)
+                if cfg.wandb.enable:
+                     wandb_metrics["train/similarity_matrix"] = wandb.Image(heatmap_path)
 
-                # Save and Log Heatmap
-                save_similarity_heatmap(sim_matrix, step, cfg.output_dir, use_wandb=cfg.wandb.enable)
         else:
             if step % 10 == 0:
                 logging.info(f"Step {step}: Carpet embeddings not found, skipping loss calculation.")
         
         # Validation Loop (every 500 steps)
         if step > 0 and step % 500 == 0:
-            validate(policy, val_loader, device, head_encoder, head_carpet, step, cfg)
+            val_metrics, val_heatmap_path = validate(policy, val_loader, device, head_encoder, head_carpet, step, cfg)
+            
+            if cfg.wandb.enable:
+                wandb_metrics.update(val_metrics)
+                if val_heatmap_path:
+                    wandb_metrics["val/similarity_matrix"] = wandb.Image(val_heatmap_path)
+            
             save_checkpoint(step, cfg.output_dir, head_encoder, head_carpet, optimizer)
             
-            # Save t-SNE plot (using the last batch from training)
+            # Save t-SNE plot
             if 'proj_encoder' in locals() and 'proj_carpet' in locals():
-                save_tsne_plot(proj_encoder, proj_carpet, step, cfg.output_dir, use_wandb=cfg.wandb.enable)
+                tsne_path = save_tsne_plot(proj_encoder, proj_carpet, step, cfg.output_dir, use_wandb=False)
+                if cfg.wandb.enable:
+                    wandb_metrics["val/tsne_plot"] = wandb.Image(tsne_path)
+
+        # Log to WandB (Once per step)
+        if cfg.wandb.enable and wandb_metrics:
+            wandb.log(wandb_metrics, step=step)
 
     logging.info("End of extraction")
     # Save final checkpoint
@@ -264,10 +277,11 @@ def train(cfg: TrainPipelineConfig):
 def save_similarity_heatmap(sim_matrix, step, output_dir, use_wandb=False):
     """
     Saves a heatmap of the similarity matrix.
+    Returns the path to the saved plot.
     """ 
     sim_matrix_np = sim_matrix.detach().cpu().numpy()
     
-    plt.figure(figsize=(10, 8))
+    fig = plt.figure(figsize=(10, 8))
     plt.imshow(sim_matrix_np, cmap='viridis', interpolation='nearest')
     plt.colorbar()
     plt.title(f"Similarity Matrix (Step {step})")
@@ -277,13 +291,16 @@ def save_similarity_heatmap(sim_matrix, step, output_dir, use_wandb=False):
     # Save plot
     plots_dir = os.path.join(output_dir, "plots")
     os.makedirs(plots_dir, exist_ok=True)
-    plt.savefig(os.path.join(plots_dir, f"sim_matrix_step_{step:06d}.png"))
-    plt.close()
+    path = os.path.join(plots_dir, f"sim_matrix_step_{step:06d}.png")
+    plt.savefig(path)
+    plt.close(fig)
 
     if use_wandb:
         wandb.log({
-            f"similarity_matrix/step": wandb.Image(os.path.join(plots_dir, f"sim_matrix_step_{step:06d}.png"))
-        })
+            f"similarity_matrix/step": wandb.Image(path)
+        }, step=step)
+        
+    return path
 
 
 def extract_embeddings(policy, batch, device):
@@ -463,6 +480,7 @@ def validate(policy, val_loader, device, head_encoder, head_carpet, step, cfg):
     total_loss = 0
     total_samples = 0
     metrics_accum = {}
+    heatmap_path = None
     
     # Run validation on a few batches (e.g., 10 batches or full val set)
     # For speed, let's limit to 50 batches max
@@ -502,27 +520,28 @@ def validate(policy, val_loader, device, head_encoder, head_carpet, step, cfg):
                 # Save heatmap for the first batch only
                 if i == 0:
                      sim_matrix = compute_similarity_matrix(proj_encoder, proj_carpet)
-                     save_similarity_heatmap(sim_matrix, step, cfg.output_dir, use_wandb=cfg.wandb.enable)
+                     # Don't log to wandb here, just save to disk and return path
+                     heatmap_path = save_similarity_heatmap(sim_matrix, step, cfg.output_dir, use_wandb=False)
 
+    val_metrics = {}
     if total_samples > 0:
         avg_loss = total_loss / total_samples
         log_msg = f"Validation Step {step}: Loss = {avg_loss:.4f}"
         
-        wandb_metrics = {"val/loss": avg_loss}
+        val_metrics["val/loss"] = avg_loss
         
         for k in metrics_accum:
             avg_acc = metrics_accum[k] / total_samples
             log_msg += f", {k} = {avg_acc:.1f}%"
-            wandb_metrics[f"val/{k}"] = avg_acc
+            val_metrics[f"val/{k}"] = avg_acc
             
         logging.info(colored(log_msg, "green"))
         
-        if cfg.wandb.enable:
-            wandb.log(wandb_metrics, step=step)
-            
     policy.train()
     head_encoder.train()
     head_carpet.train()
+    
+    return val_metrics, heatmap_path
 
 
 @parser.wrap()
