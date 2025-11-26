@@ -121,6 +121,42 @@ def extract_embeddings(policy, batch, device):
         return encoder_tokens, encoder_pos, carpet_embeddings
 
 
+class ProjectionHead(nn.Module):
+    def __init__(self, input_dim, output_dim=256):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(input_dim, input_dim),
+            nn.ReLU(),
+            nn.Linear(input_dim, output_dim)
+        )
+
+    def forward(self, x):
+        return self.net(x)
+
+
+def compute_contrastive_loss(emb1, emb2, temperature=0.07):
+    """
+    Computes InfoNCE loss (CLIP-style) between two batches of embeddings.
+    emb1, emb2: (Batch_Size, Dim)
+    """
+    # Normalize embeddings
+    emb1 = torch.nn.functional.normalize(emb1, dim=-1)
+    emb2 = torch.nn.functional.normalize(emb2, dim=-1)
+
+    # Similarity matrix
+    logits = torch.matmul(emb1, emb2.T) / temperature
+    
+    # Labels: diagonal elements are positive pairs
+    batch_size = emb1.shape[0]
+    labels = torch.arange(batch_size, device=emb1.device)
+    
+    # Symmetric loss
+    loss_1 = torch.nn.functional.cross_entropy(logits, labels)
+    loss_2 = torch.nn.functional.cross_entropy(logits.T, labels)
+    
+    return (loss_1 + loss_2) / 2
+
+
 @parser.wrap()
 def train(cfg: TrainPipelineConfig):
     cfg.validate()
@@ -144,6 +180,20 @@ def train(cfg: TrainPipelineConfig):
         ds_meta=dataset.meta,
     )
     policy.to(device)
+
+    # Initialize Projection Heads
+    # Assuming the model dimension is policy.config.dim_model (usually 512)
+    embed_dim = policy.config.dim_model
+    proj_dim = 256 # Output dimension for contrastive learning
+    
+    head_encoder = ProjectionHead(embed_dim, proj_dim).to(device)
+    head_carpet = ProjectionHead(embed_dim, proj_dim).to(device)
+    
+    # Optimizer for projection heads (and potentially backbones if we unfreeze them)
+    optimizer = torch.optim.Adam(
+        list(head_encoder.parameters()) + list(head_carpet.parameters()), 
+        lr=1e-4
+    )
 
     logging.info(colored("Output dir:", "yellow", attrs=["bold"]) + f" {cfg.output_dir}")
     logging.info(f"{dataset.num_frames=} ({format_big_number(dataset.num_frames)})")
@@ -181,6 +231,33 @@ def train(cfg: TrainPipelineConfig):
 
         encoder_tokens, encoder_pos, carpet_embeddings = extract_embeddings(policy, batch, device)
         
+        if carpet_embeddings is not None:
+            # 1. Pooling: (Sequence, Batch, Dim) -> (Batch, Dim)
+            # We use Global Average Pooling over the sequence dimension (dim=0)
+            # encoder_tokens: (Seq, Batch, Dim)
+            # carpet_embeddings: (Seq_Carpet, Batch, Dim)
+            
+            feat_encoder = encoder_tokens.mean(dim=0) 
+            feat_carpet = carpet_embeddings.mean(dim=0)
+
+            # 2. Projection
+            proj_encoder = head_encoder(feat_encoder)
+            proj_carpet = head_carpet(feat_carpet)
+
+            # 3. Compute Loss
+            loss = compute_contrastive_loss(proj_encoder, proj_carpet)
+
+            # 4. Optimization
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+
+            if step % 10 == 0:
+                logging.info(f"Step {step}: Loss = {loss.item():.4f}")
+        else:
+            if step % 10 == 0:
+                logging.info(f"Step {step}: Carpet embeddings not found, skipping loss calculation.")
+
     logging.info("End of extraction")
 
 
