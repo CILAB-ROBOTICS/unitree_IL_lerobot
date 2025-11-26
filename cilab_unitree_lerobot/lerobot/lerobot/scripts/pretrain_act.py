@@ -40,6 +40,225 @@ from lerobot.common.utils.utils import (
 )
 from lerobot.configs import parser
 from lerobot.configs.train import TrainPipelineConfig
+from sklearn.manifold import TSNE
+import numpy as np
+import matplotlib.cm as cm
+
+def save_tsne_plot(emb1, emb2, step, output_dir, use_wandb=False):
+    """
+    Saves a t-SNE plot of the embeddings.
+    emb1: Encoder embeddings (B, D)
+    emb2: Carpet embeddings (B, D)
+    """
+    B = emb1.size(0)
+    
+    # Combine embeddings
+    combined = torch.cat([emb1, emb2], dim=0).detach().cpu().numpy()
+    
+    # Run t-SNE
+    tsne = TSNE(n_components=2, random_state=42, perplexity=min(30, B-1))
+    reduced = tsne.fit_transform(combined)
+    
+    # Split back
+    reduced_1 = reduced[:B]
+    reduced_2 = reduced[B:]
+    
+    fig = plt.figure(figsize=(10, 8))
+    
+    # Create colors for each pair
+    colors = cm.rainbow(np.linspace(0, 1, B))
+    
+    # Plot
+    for i in range(B):
+        plt.scatter(reduced_1[i, 0], reduced_1[i, 1], color=colors[i], marker='o', s=50, label='Encoder' if i == 0 else "")
+        plt.scatter(reduced_2[i, 0], reduced_2[i, 1], color=colors[i], marker='^', s=50, label='Carpet' if i == 0 else "")
+        # Draw line between pair
+        plt.plot([reduced_1[i, 0], reduced_2[i, 0]], [reduced_1[i, 1], reduced_2[i, 1]], color=colors[i], alpha=0.3)
+        
+    plt.title(f"t-SNE Visualization (Step {step})")
+    plt.legend()
+    
+    # Save to disk
+    plots_dir = os.path.join(output_dir, "plots")
+    os.makedirs(plots_dir, exist_ok=True)
+    plt.savefig(os.path.join(plots_dir, f"tsne_step_{step:06d}.png"))
+    
+    # Log to wandb
+    if use_wandb:
+        import wandb
+        wandb.log({"val/tsne_plot": wandb.Image(fig)}, step=step)
+        
+    plt.close(fig)
+
+
+@parser.wrap()
+def train(cfg: TrainPipelineConfig):
+    cfg.validate()
+    logging.info(pformat(cfg.to_dict()))
+
+    if cfg.seed is not None:
+        set_seed(cfg.seed)
+
+    # Check device is available
+    device = get_safe_torch_device(cfg.policy.device, log=True)
+    torch.backends.cudnn.benchmark = True
+    torch.backends.cuda.matmul.allow_tf32 = True
+
+    # Initialize WandB
+    if cfg.wandb.enable:
+        wandb.init(
+            project=cfg.wandb.project,
+            entity=cfg.wandb.entity,
+            config=cfg.to_dict(),
+            job_type="pretrain_act",
+            notes=cfg.wandb.notes,
+        )
+
+    logging.info("Creating dataset")
+    # Load full dataset first
+    full_dataset = make_dataset(cfg)
+    
+    # Split into Train (90%) and Val (10%)
+    val_ratio = 0.1
+    val_size = int(len(full_dataset) * val_ratio)
+    train_size = len(full_dataset) - val_size
+    train_dataset, val_dataset = torch.utils.data.random_split(full_dataset, [train_size, val_size])
+    
+    logging.info(f"Dataset split: Train={len(train_dataset)}, Val={len(val_dataset)}")
+
+    logging.info("Creating policy (for backbone & normalization)")
+
+    policy = make_policy(
+        cfg=cfg.policy,
+        ds_meta=full_dataset.meta,
+    )
+    policy.to(device)
+
+    # Initialize Projection Heads
+    embed_dim = policy.config.dim_model
+    proj_dim = 256 
+    
+    head_encoder = ProjectionHead(embed_dim, proj_dim).to(device)
+    head_carpet = ProjectionHead(embed_dim, proj_dim).to(device)
+    
+    optimizer = torch.optim.Adam(
+        list(head_encoder.parameters()) + list(head_carpet.parameters()), 
+        lr=1e-4
+    )
+
+    logging.info(colored("Output dir:", "yellow", attrs=["bold"]) + f" {cfg.output_dir}")
+    logging.info(f"{full_dataset.num_frames=} ({format_big_number(full_dataset.num_frames)})")
+
+    if hasattr(cfg.policy, "drop_n_last_frames"):
+        shuffle = False
+        sampler = EpisodeAwareSampler(
+            full_dataset.episode_data_index,
+            drop_n_last_frames=cfg.policy.drop_n_last_frames,
+            shuffle=True,
+        )
+    else:
+        shuffle = True
+        sampler = None
+
+    # Create DataLoaders
+    train_loader = torch.utils.data.DataLoader(
+        train_dataset,
+        num_workers=cfg.num_workers,
+        batch_size=cfg.batch_size,
+        shuffle=True,
+        pin_memory=device.type != "cpu",
+        drop_last=True,
+    )
+    
+    val_loader = torch.utils.data.DataLoader(
+        val_dataset,
+        num_workers=cfg.num_workers,
+        batch_size=cfg.batch_size,
+        shuffle=False,
+        pin_memory=device.type != "cpu",
+        drop_last=False,
+    )
+    
+    dl_iter = cycle(train_loader)
+
+    logging.info("Start extracting embeddings...")
+
+    for step in range(cfg.steps):
+        batch = next(dl_iter)
+
+        for key in batch:
+            if isinstance(batch[key], torch.Tensor):
+                batch[key] = batch[key].to(device, non_blocking=True)
+
+        encoder_tokens, encoder_pos, carpet_embeddings = extract_embeddings(policy, batch, device)
+        
+        if carpet_embeddings is not None:
+            feat_encoder = encoder_tokens.mean(dim=0) 
+            feat_carpet = carpet_embeddings.mean(dim=0)
+
+            proj_encoder = head_encoder(feat_encoder)
+            proj_carpet = head_carpet(feat_carpet)
+
+            loss = compute_contrastive_loss(proj_encoder, proj_carpet)
+
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+
+            if step % 10 == 0:
+                acc_metrics = accuracy(proj_encoder, proj_carpet, topk=(1, 5, 10))
+                
+                # Compute Similarity Stats
+                sim_matrix = compute_similarity_matrix(proj_encoder, proj_carpet)
+                B = sim_matrix.size(0)
+                
+                # Avg Positive Similarity (Diagonal)
+                avg_pos_sim = torch.diag(sim_matrix).mean().item()
+                
+                # Avg Negative Similarity (Off-diagonal)
+                if B > 1:
+                    avg_neg_sim = (sim_matrix.sum() - torch.diag(sim_matrix).sum()) / (B * B - B)
+                    avg_neg_sim = avg_neg_sim.item()
+                else:
+                    avg_neg_sim = 0.0
+
+                log_msg = f"Step {step}: Train Loss = {loss.item():.4f}"
+                log_msg += f", Avg Pos Sim: {avg_pos_sim:.4f}, Avg Neg Sim: {avg_neg_sim:.4f}"
+                
+                for k, v in acc_metrics.items():
+                    log_msg += f", {k} = {v:.1f}%"
+                #logging.info(log_msg)
+                
+                # Log to WandB
+                if cfg.wandb.enable:
+                    wandb_metrics = {
+                        "train/loss": loss.item(),
+                        "train/avg_pos_sim": avg_pos_sim,
+                        "train/avg_neg_sim": avg_neg_sim,
+                    }
+                    for k, v in acc_metrics.items():
+                        wandb_metrics[f"train/{k}"] = v
+                    
+                    wandb.log(wandb_metrics, step=step)
+
+                # Save and Log Heatmap
+                save_similarity_heatmap(sim_matrix, step, cfg.output_dir, use_wandb=cfg.wandb.enable)
+        else:
+            if step % 10 == 0:
+                logging.info(f"Step {step}: Carpet embeddings not found, skipping loss calculation.")
+        
+        # Validation Loop (every 500 steps)
+        if step > 0 and step % 500 == 0:
+            validate(policy, val_loader, device, head_encoder, head_carpet, step, cfg)
+            save_checkpoint(step, cfg.output_dir, head_encoder, head_carpet, optimizer)
+            
+            # Save t-SNE plot (using the last batch from training)
+            if 'proj_encoder' in locals() and 'proj_carpet' in locals():
+                save_tsne_plot(proj_encoder, proj_carpet, step, cfg.output_dir, use_wandb=cfg.wandb.enable)
+
+    logging.info("End of extraction")
+    # Save final checkpoint
+    save_checkpoint(cfg.steps, cfg.output_dir, head_encoder, head_carpet, optimizer)
 
 
 def save_similarity_heatmap(sim_matrix, step, output_dir, use_wandb=False):
@@ -467,7 +686,7 @@ def train(cfg: TrainPipelineConfig):
                 logging.info(f"Step {step}: Carpet embeddings not found, skipping loss calculation.")
         
         # Validation Loop (every 500 steps)
-        if step > 0 and step % 500 == 0:
+        if step > 0 and step % 1000 == 0:
             validate(policy, val_loader, device, head_encoder, head_carpet, step, cfg)
 
     logging.info("End of extraction")
