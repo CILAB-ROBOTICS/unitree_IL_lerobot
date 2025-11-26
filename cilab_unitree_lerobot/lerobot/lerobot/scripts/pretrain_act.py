@@ -19,6 +19,7 @@ from pprint import pformat
 
 import einops
 import torch
+import torch.nn as nn
 from termcolor import colored
 
 from lerobot.common.datasets.factory import make_dataset
@@ -37,12 +38,27 @@ from lerobot.configs.train import TrainPipelineConfig
 
 def extract_embeddings(policy, batch, device):
     policy.eval()
+
+    tactile_backbone = nn.Sequential(
+                        nn.Conv2d(3, 32, kernel_size=3, padding=1),
+                        nn.BatchNorm2d(32),
+                        nn.ReLU(),
+                        nn.Conv2d(32, 64, kernel_size=3, padding=1, stride=2),  # downsample but keep spatial
+                        nn.BatchNorm2d(64),
+                        nn.ReLU(),
+                        nn.Conv2d(64, 128, kernel_size=3, padding=1),
+                        nn.BatchNorm2d(128),
+                        nn.ReLU(),
+                        nn.Conv2d(128, 512, kernel_size=1),  # project to model dim
+                        # NO AdaptiveAvgPool2d((1,1)) - preserve spatial information!
+                    )
+    tactile_backbone = tactile_backbone.to(device)
     with torch.no_grad():
         batch = policy.normalize_inputs(batch)
         if policy.config.image_features:
             batch = dict(batch)
             batch["observation.images"] = [batch[key] for key in policy.config.image_features]
-        
+
         model = policy.model
         batch_size = batch["observation.state"].shape[0]
 
@@ -62,10 +78,9 @@ def extract_embeddings(policy, batch, device):
         if model.config.image_features and "observation.images" in batch:
             all_2d_features = []
             all_2d_pos_embeds = []
-
             for img_key, img in zip(model.config.image_features, batch["observation.images"]):
-                if "tactile" in img_key and model.tactile_backbone is not None:
-                    tac_features = model.tactile_backbone(img)
+                if "tactile" in img_key and tactile_backbone is not None:
+                    tac_features = tactile_backbone(img)
                     tac_pos_embed = model.encoder_cam_feat_pos_embed(tac_features).to(dtype=tac_features.dtype)
                     
                     tac_features = einops.rearrange(tac_features, "b c h w -> (h w) b c")
@@ -77,7 +92,6 @@ def extract_embeddings(policy, batch, device):
                     cam_features = model.backbone(img)["feature_map"]
                     cam_pos_embed = model.encoder_cam_feat_pos_embed(cam_features).to(dtype=cam_features.dtype)
                     cam_features = model.encoder_img_feat_input_proj(cam_features)
-
 
                     cam_features = einops.rearrange(cam_features, "b c h w -> (h w) b c")
                     cam_pos_embed = einops.rearrange(cam_pos_embed, "b c h w -> (h w) b c")
@@ -157,7 +171,7 @@ def train(cfg: TrainPipelineConfig):
                 batch[key] = batch[key].to(device, non_blocking=True)
 
         encoder_tokens, encoder_pos = extract_embeddings(policy, batch, device)
-        
+
         if step % 10 == 0:
             logging.info(f"Step {step}: Embeddings Shape: {encoder_tokens.shape}, Pos Embeds Shape: {encoder_pos.shape}")
 
