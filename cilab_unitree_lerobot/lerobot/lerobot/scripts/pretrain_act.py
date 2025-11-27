@@ -541,6 +541,38 @@ def validate(policy, val_loader, device, head_encoder, head_carpet, step, cfg):
     return val_metrics, heatmap_path
 
 
+def split_dataset_by_episodes(dataset, val_ratio=0.1):
+    """
+    Splits the dataset into train and validation sets by episodes.
+    """
+    episode_data_index = dataset.episode_data_index
+    num_episodes = len(episode_data_index["from"])
+    all_episodes = torch.randperm(num_episodes).tolist()
+    
+    val_size = int(num_episodes * val_ratio)
+    train_size = num_episodes - val_size
+    
+    train_episodes = all_episodes[:train_size]
+    val_episodes = all_episodes[train_size:]
+    
+    train_indices = []
+    for ep_idx in train_episodes:
+        start = episode_data_index["from"][ep_idx].item()
+        end = episode_data_index["to"][ep_idx].item()
+        train_indices.extend(range(start, end))
+        
+    val_indices = []
+    for ep_idx in val_episodes:
+        start = episode_data_index["from"][ep_idx].item()
+        end = episode_data_index["to"][ep_idx].item()
+        val_indices.extend(range(start, end))
+        
+    train_dataset = torch.utils.data.Subset(dataset, train_indices)
+    val_dataset = torch.utils.data.Subset(dataset, val_indices)
+    
+    return train_dataset, val_dataset
+
+
 @parser.wrap()
 def train(cfg: TrainPipelineConfig):
     cfg.validate()
@@ -565,25 +597,20 @@ def train(cfg: TrainPipelineConfig):
         )
 
     logging.info("Creating dataset")
-    # Load full dataset first
-    full_dataset = make_dataset(cfg)
+    # Load dataset
+    dataset = make_dataset(cfg)
     
-    # Split into Train (90%) and Val (10%)
-    # Note: This simple random split assumes i.i.d samples. 
-    # For robotics, splitting by episodes is better, but LeRobotDataset structure is complex.
-    # We will use a simple random split for now as a starting point.
-    val_ratio = 0.1
-    val_size = int(len(full_dataset) * val_ratio)
-    train_size = len(full_dataset) - val_size
-    train_dataset, val_dataset = torch.utils.data.random_split(full_dataset, [train_size, val_size])
+    # Split into Train (80%) and Val (20%) by Episodes
+    val_ratio = 0.2
+    train_dataset, val_dataset = split_dataset_by_episodes(dataset, val_ratio)
     
-    logging.info(f"Dataset split: Train={len(train_dataset)}, Val={len(val_dataset)}")
+    logging.info(f"Dataset split (by episodes): Train={len(train_dataset)} frames, Val={len(val_dataset)} frames")
 
     logging.info("Creating policy (for backbone & normalization)")
 
     policy = make_policy(
         cfg=cfg.policy,
-        ds_meta=full_dataset.meta, # Use meta from full dataset
+        ds_meta=dataset.meta, # Use meta from full dataset
     )
     policy.to(device)
 
