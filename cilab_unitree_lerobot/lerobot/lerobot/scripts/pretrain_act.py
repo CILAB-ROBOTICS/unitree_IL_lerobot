@@ -90,6 +90,7 @@ def save_tsne_plot(emb1, emb2, step, output_dir, use_wandb=False):
         
     plt.close(fig)
 
+    return os.path.join(plots_dir, f"tsne_step_{step:06d}.png")
 
 @parser.wrap()
 def train(cfg: TrainPipelineConfig):
@@ -257,8 +258,6 @@ def train(cfg: TrainPipelineConfig):
                 if val_heatmap_path:
                     wandb_metrics["val/similarity_matrix"] = wandb.Image(val_heatmap_path)
             
-            save_checkpoint(step, cfg.output_dir, head_encoder, head_carpet, optimizer)
-            
             # Save t-SNE plot
             if 'proj_encoder' in locals() and 'proj_carpet' in locals():
                 tsne_path = save_tsne_plot(proj_encoder, proj_carpet, step, cfg.output_dir, use_wandb=False)
@@ -270,8 +269,6 @@ def train(cfg: TrainPipelineConfig):
             wandb.log(wandb_metrics, step=step)
 
     logging.info("End of extraction")
-    # Save final checkpoint
-    save_checkpoint(cfg.steps, cfg.output_dir, head_encoder, head_carpet, optimizer)
 
 
 def save_similarity_heatmap(sim_matrix, step, output_dir, use_wandb=False):
@@ -714,8 +711,6 @@ def train(cfg: TrainPipelineConfig):
                 wandb_metrics.update(val_metrics)
                 if val_heatmap_path:
                     wandb_metrics["val/similarity_matrix"] = wandb.Image(val_heatmap_path)
-            
-            save_checkpoint(step, cfg.output_dir, head_encoder, head_carpet, optimizer)
             
             # Save t-SNE plot
             if 'proj_encoder' in locals() and 'proj_carpet' in locals():
