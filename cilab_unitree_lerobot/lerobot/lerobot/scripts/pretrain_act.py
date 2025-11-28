@@ -287,16 +287,18 @@ def similarity_heatmap(sim_matrix, step, tag="default"):
     return img
 
 
-def validate(policy, val_loader, device, head_encoder, head_third, head_carpet, step, loss_mode="both"):
+def validate(policy, val_loader, device, head_encoder, head_third=None, head_carpet=None, step=0, mode="both"):
     policy.eval()
     head_encoder.eval()
-    head_third.eval()
-    head_carpet.eval()
+    if head_third: head_third.eval()
+    if head_carpet: head_carpet.eval()
     
     total_loss = 0
     total_samples = 0
     metrics_accum = {}
-    heatmap_paths = {}
+    
+    sim_matrix_third = None
+    sim_matrix_carpet = None
     
     # Run validation on a few batches (e.g., 10 batches or full val set)
     # For speed, let's limit to 50 batches max
@@ -315,39 +317,39 @@ def validate(policy, val_loader, device, head_encoder, head_third, head_carpet, 
             
             # Check if we have enough data for the selected mode
             valid_step = True
-            if loss_mode in ["third_only", "both"] and third_embeddings is None:
+            if mode in ["third", "both"] and third_embeddings is None:
                 valid_step = False
-            if loss_mode in ["carpet_only", "both"] and carpet_embeddings is None:
+            if mode in ["carpet", "both"] and carpet_embeddings is None:
                 valid_step = False
 
             if valid_step:
                 feat_encoder = ego_embedding.mean(dim=0) 
                 
                 feat_third = None
-                if loss_mode in ["third_only", "both"] and third_embeddings is not None:
+                if mode in ["third", "both"] and third_embeddings is not None:
                     feat_third = third_embeddings.mean(dim=0)
                     
                 feat_carpet = None
-                if loss_mode in ["carpet_only", "both"] and carpet_embeddings is not None:
+                if mode in ["carpet", "both"] and carpet_embeddings is not None:
                     feat_carpet = carpet_embeddings.mean(dim=0)
 
                 proj_encoder = head_encoder(feat_encoder)
                 
                 proj_third = None
-                if loss_mode in ["third_only", "both"] and third_embeddings is not None:
+                if mode in ["third", "both"] and third_embeddings is not None and head_third is not None:
                     proj_third = head_third(feat_third)
                     
                 proj_carpet = None
-                if loss_mode in ["carpet_only", "both"] and carpet_embeddings is not None:
+                if mode in ["carpet", "both"] and carpet_embeddings is not None and head_carpet is not None:
                     proj_carpet = head_carpet(feat_carpet)
 
                 loss = torch.tensor(0.0, device=device)
                 
-                if loss_mode in ["third_only", "both"] and third_embeddings is not None:
+                if proj_third is not None:
                     loss_third = contrastive_loss(proj_encoder, proj_third)
                     loss += loss_third
                 
-                if loss_mode in ["carpet_only", "both"] and carpet_embeddings is not None:
+                if proj_carpet is not None:
                     loss_carpet = contrastive_loss(proj_encoder, proj_carpet)
                     loss += loss_carpet
                 
@@ -356,8 +358,7 @@ def validate(policy, val_loader, device, head_encoder, head_third, head_carpet, 
                 total_samples += batch_size
                 
                 # Accumulate accuracy metrics
-                # Accumulate accuracy metrics
-                if loss_mode in ["third_only", "both"] and third_embeddings is not None:
+                if proj_third is not None:
                     acc_metrics = accuracy(proj_encoder, proj_third, topk=(1, 5, 10))
                     for k, v in acc_metrics.items():
                         key_name = f"third_{k}"
@@ -365,7 +366,7 @@ def validate(policy, val_loader, device, head_encoder, head_third, head_carpet, 
                             metrics_accum[key_name] = 0.0
                         metrics_accum[key_name] += v * batch_size
                         
-                if loss_mode in ["carpet_only", "both"] and carpet_embeddings is not None:
+                if proj_carpet is not None:
                     acc_metrics = accuracy(proj_encoder, proj_carpet, topk=(1, 5, 10))
                     for k, v in acc_metrics.items():
                         key_name = f"carpet_{k}"
@@ -375,13 +376,11 @@ def validate(policy, val_loader, device, head_encoder, head_third, head_carpet, 
 
                 # Save heatmap for the first batch only
                 if i == 0:
-                     if loss_mode in ["third_only", "both"] and third_embeddings is not None:
+                     if proj_third is not None:
                         sim_matrix_third = similarity_matrix(proj_encoder, proj_third)
-                        heatmap_paths["third"] = similarity_heatmap(sim_matrix_third, step, tag="third")
                      
-                     if loss_mode in ["carpet_only", "both"] and carpet_embeddings is not None:
+                     if proj_carpet is not None:
                         sim_matrix_carpet = similarity_matrix(proj_encoder, proj_carpet)
-                        heatmap_paths["carpet"] = similarity_heatmap(sim_matrix_carpet, step, tag="carpet")
 
     val_metrics = {}
     if total_samples > 0:
@@ -399,8 +398,8 @@ def validate(policy, val_loader, device, head_encoder, head_third, head_carpet, 
         
     policy.train()
     head_encoder.train()
-    head_third.train()
-    head_carpet.train()
+    if head_third: head_third.train()
+    if head_carpet: head_carpet.train()
     
     return sim_matrix_third, sim_matrix_carpet
 
@@ -500,18 +499,20 @@ def train(cfg: TrainPipelineConfig):
     embed_dim = policy.config.dim_model
     proj_dim = 256 
     
+    # Loss mode configuration: 'carpet', 'third_cam', 'both'
+    mode = os.getenv("MODE", getattr(cfg, "mode", "both"))
+    logging.info(f"Mode: {mode}")
+
     head_encoder = ProjectionHead(embed_dim, proj_dim).to(device)
-    head_third = ProjectionHead(embed_dim, proj_dim).to(device)
-    head_carpet = ProjectionHead(embed_dim, proj_dim).to(device)
+    if mode in ["carpet", "both"]:
+        head_carpet = ProjectionHead(embed_dim, proj_dim).to(device)
+    if mode in ["third", "both"]:
+        head_third = ProjectionHead(embed_dim, proj_dim).to(device)
     
     optimizer = torch.optim.Adam(
         list(head_encoder.parameters()) + list(head_third.parameters()) + list(head_carpet.parameters()), 
         lr=1e-4
     )
-    
-    # Loss mode configuration: 'carpet_only', 'third_only', 'both'
-    loss_mode = os.getenv("LOSS_MODE", getattr(cfg, "loss_mode", "both"))
-    logging.info(f"Loss Mode: {loss_mode}")
 
     run_name = os.path.basename(cfg.output_dir) # outputs/train/2025-04-05/06-30-11_act
     output_dir = os.path.join("/workspace/pretrain/model", run_name)
@@ -551,42 +552,37 @@ def train(cfg: TrainPipelineConfig):
 
         # Check if we have enough data for the selected mode
         valid_step = True
-        if loss_mode in ["third_only", "both"] and third_embeddings is None:
+        if mode in ["third", "both"] and third_embeddings is None:
             valid_step = False
-        if loss_mode in ["carpet_only", "both"] and carpet_embeddings is None:
+        if mode in ["carpet", "both"] and carpet_embeddings is None:
             valid_step = False
 
         if valid_step:
             feat_encoder = ego_embedding.mean(dim=0) 
-            
             feat_third = None
-            if loss_mode in ["third_only", "both"] and third_embeddings is not None:
+            if mode in ["third", "both"] and third_embeddings is not None:
                 feat_third = third_embeddings.mean(dim=0)
-                
             feat_carpet = None
-            if loss_mode in ["carpet_only", "both"] and carpet_embeddings is not None:
+            if mode in ["carpet", "both"] and carpet_embeddings is not None:
                 feat_carpet = carpet_embeddings.mean(dim=0)
 
             proj_encoder = head_encoder(feat_encoder)
-            
             proj_third = None
-            if loss_mode in ["third_only", "both"] and third_embeddings is not None:
+            if mode in ["third", "both"] and third_embeddings is not None:
                 proj_third = head_third(feat_third)
-                
             proj_carpet = None
-            if loss_mode in ["carpet_only", "both"] and carpet_embeddings is not None:
+            if mode in ["carpet", "both"] and carpet_embeddings is not None:
                 proj_carpet = head_carpet(feat_carpet)
 
             loss = torch.tensor(0.0, device=device)
             loss_third_val = 0.0
             loss_carpet_val = 0.0
 
-            if loss_mode in ["third_only", "both"] and third_embeddings is not None:
+            if mode in ["third", "both"] and third_embeddings is not None:
                 loss_third = contrastive_loss(proj_encoder, proj_third)
                 loss += loss_third
                 loss_third_val = loss_third.item()
-            
-            if loss_mode in ["carpet_only", "both"] and carpet_embeddings is not None:
+            if mode in ["carpet", "both"] and carpet_embeddings is not None:
                 loss_carpet = contrastive_loss(proj_encoder, proj_carpet)
                 loss += loss_carpet
                 loss_carpet_val = loss_carpet.item()
@@ -599,12 +595,12 @@ def train(cfg: TrainPipelineConfig):
 
             if step % 10 == 0:
                 # Metrics for Third Cam
-                if loss_mode in ["third_only", "both"] and third_embeddings is not None:
+                if mode in ["third", "both"] and third_embeddings is not None:
                     acc_metrics_third = accuracy(proj_encoder, proj_third, topk=(1, 5, 10))
                     sim_matrix_third = similarity_matrix(proj_encoder, proj_third)
                 
                 # Metrics for Carpet
-                if loss_mode in ["carpet_only", "both"] and carpet_embeddings is not None:
+                if mode in ["carpet", "both"] and carpet_embeddings is not None:
                     acc_metrics_carpet = accuracy(proj_encoder, proj_carpet, topk=(1, 5, 10))
                     sim_matrix_carpet = similarity_matrix(proj_encoder, proj_carpet)
 
@@ -612,34 +608,46 @@ def train(cfg: TrainPipelineConfig):
                     wandb_metrics.update({
                         "train/loss": loss.item(),
                     })
-                    if loss_mode in ["third_only", "both"]:
+                    if mode in ["third", "both"]:
                         wandb_metrics["train/loss_third"] = loss_third_val
-                    if loss_mode in ["carpet_only", "both"]:
+                    if mode in ["carpet", "both"]:
                         wandb_metrics["train/loss_carpet"] = loss_carpet_val
 
-                    if loss_mode in ["third_only", "both"] and third_embeddings is not None:
-                         for k, v in acc_metrics_third.items():
+                    if mode in ["third", "both"] and third_embeddings is not None:
+                        for k, v in acc_metrics_third.items():
                             wandb_metrics[f"train/third_{k}"] = v
-                         wandb_metrics["train/similarity_matrix_third"] = similarity_heatmap(sim_matrix_third, step, tag="third")
+                        wandb_metrics["train/similarity_matrix_third"] = similarity_heatmap(sim_matrix_third, step, tag="third")
 
-                    if loss_mode in ["carpet_only", "both"] and carpet_embeddings is not None:
+                    if mode in ["carpet", "both"] and carpet_embeddings is not None:
                         for k, v in acc_metrics_carpet.items():
                             wandb_metrics[f"train/carpet_{k}"] = v
                         wandb_metrics["train/similarity_matrix_carpet"] = similarity_heatmap(sim_matrix_carpet, step, tag="carpet")
+        else:
+            logging.info("Not enough data for the selected mode")
 
         # Validation
         if step > 0 and step % 1000 == 0:
-            sim_matrix_third, sim_matrix_carpet = validate(policy, val_loader, device, head_encoder, head_third, head_carpet, step, loss_mode)
+            logging.info("Validation...")
+
+            sim_matrix_third, sim_matrix_carpet = validate(policy, val_loader, device, head_encoder, head_third, head_carpet, step, mode)
             
             if cfg.wandb.enable:
-                wandb_metrics["val/similarity_matrix_third"] = similarity_heatmap(sim_matrix_third, step, tag="third")
-                wandb_metrics["val/similarity_matrix_carpet"] = similarity_heatmap(sim_matrix_carpet, step, tag="carpet")
+                if mode in ["third", "both"]:
+                    wandb_metrics["val/similarity_matrix_third"] = similarity_heatmap(sim_matrix_third, step, tag="third")
+                if mode in ["carpet", "both"]:
+                    wandb_metrics["val/similarity_matrix_carpet"] = similarity_heatmap(sim_matrix_carpet, step, tag="carpet")
             
             # Save t-SNE plot
-            if 'proj_encoder' in locals() and 'proj_third' in locals():
-                tsne_path = tsne_plot(proj_encoder, proj_third, step, output_dir, tag="third")
-                if cfg.wandb.enable:
-                    wandb_metrics["val/tsne_plot_third"] = tsne_path
+            if 'proj_encoder' in locals():
+                if mode in ["third", "both"] and 'proj_third' in locals() and proj_third is not None:
+                    tsne_path = tsne_plot(proj_encoder, proj_third, step, output_dir, tag="third")
+                    if cfg.wandb.enable:
+                        wandb_metrics["val/tsne_plot_third"] = tsne_path # 주의: tsne_plot이 wandb.Image를 반환하는지 확인 필요
+                
+                if mode in ["carpet", "both"] and 'proj_carpet' in locals() and proj_carpet is not None:
+                    tsne_path = tsne_plot(proj_encoder, proj_carpet, step, output_dir, tag="carpet")
+                    if cfg.wandb.enable:
+                        wandb_metrics["val/tsne_plot_carpet"] = tsne_path
             
             # Save Checkpoint
             save_checkpoint(step, output_dir, head_encoder, head_third, head_carpet, optimizer)
