@@ -177,7 +177,7 @@ def contrastive_loss(emb1, emb2, temperature=0.07):
     return (loss_1 + loss_2) / 2
 
 
-def tsne_plot(emb1, emb2, step, output_dir, tag="default", use_wandb=False):
+def tsne_plot(emb1, emb2, step, output_dir, tag="default"):
     """
     Saves a t-SNE plot of the embeddings.
     Returns the path to the saved plot.
@@ -257,7 +257,7 @@ def accuracy(embedding1: torch.Tensor, embedding2: torch.Tensor, topk=(1, 5, 10)
     return metrics
 
 
-def compute_similarity_matrix(emb1, emb2):
+def similarity_matrix(emb1, emb2):
     """
     Computes the cosine similarity matrix between two batches of embeddings.
     Returns: (Batch_Size, Batch_Size) matrix where [i, j] is sim(emb1[i], emb2[j])
@@ -341,10 +341,10 @@ def validate(policy, val_loader, device, head_encoder, head_third, head_carpet, 
 
                 # Save heatmap for the first batch only
                 if i == 0:
-                     sim_matrix_third = compute_similarity_matrix(proj_encoder, proj_third)
+                     sim_matrix_third = similarity_matrix(proj_encoder, proj_third)
                      heatmap_paths["third"] = similarity_heatmap(sim_matrix_third, step, tag="third")
                      
-                     sim_matrix_carpet = compute_similarity_matrix(proj_encoder, proj_carpet)
+                     sim_matrix_carpet = similarity_matrix(proj_encoder, proj_carpet)
                      heatmap_paths["carpet"] = similarity_heatmap(sim_matrix_carpet, step, tag="carpet")
 
     val_metrics = {}
@@ -473,8 +473,8 @@ def train(cfg: TrainPipelineConfig):
         lr=1e-4
     )
 
-    run_name = os.path.basename(output_dir) # outputs/train/2025-04-05/06-30-11_act
-    output_dir = os.path.join("/workspace", run_name)
+    run_name = os.path.basename(cfg.output_dir) # outputs/train/2025-04-05/06-30-11_act
+    output_dir = os.path.join("/workspace/pretrain/model", run_name)
     logging.info(colored("Output dir:", "yellow", attrs=["bold"]) + f" {output_dir}")
     logging.info(f"{dataset.num_frames=} ({format_big_number(dataset.num_frames)})")
 
@@ -532,11 +532,11 @@ def train(cfg: TrainPipelineConfig):
             if step % 10 == 0:
                 # Metrics for Third Cam
                 acc_metrics_third = accuracy(proj_encoder, proj_third, topk=(1, 5, 10))
-                sim_matrix_third = compute_similarity_matrix(proj_encoder, proj_third)
+                sim_matrix_third = similarity_matrix(proj_encoder, proj_third)
                 
                 # Metrics for Carpet
                 acc_metrics_carpet = accuracy(proj_encoder, proj_carpet, topk=(1, 5, 10))
-                sim_matrix_carpet = compute_similarity_matrix(proj_encoder, proj_carpet)
+                sim_matrix_carpet = similarity_matrix(proj_encoder, proj_carpet)
 
                 if cfg.wandb.enable:
                     wandb_metrics.update({
@@ -555,7 +555,7 @@ def train(cfg: TrainPipelineConfig):
 
         # Validation
         if step > 0 and step % 1000 == 0:
-            val_metrics, val_paths = validate(policy, val_loader, device, head_encoder, head_third, head_carpet, step, cfg)
+            val_metrics, val_paths = validate(policy, val_loader, device, head_encoder, head_third, head_carpet, step)
             
             if cfg.wandb.enable:
                 wandb_metrics.update(val_metrics)
@@ -565,9 +565,9 @@ def train(cfg: TrainPipelineConfig):
                 if "carpet" in val_paths:
                     wandb_metrics["val/similarity_matrix_carpet"] = similarity_heatmap(val_paths["carpet"], step, tag="carpet")
             
-            # Save t-SNE plot (Optional: for both?)
+            # Save t-SNE plot
             if 'proj_encoder' in locals() and 'proj_third' in locals():
-                tsne_path = tsne_plot(proj_encoder, proj_third, step, tag="third")
+                tsne_path = tsne_plot(proj_encoder, proj_third, step, output_dir, tag="third")
                 if cfg.wandb.enable:
                     wandb_metrics["val/tsne_plot_third"] = tsne_path
             
