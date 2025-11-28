@@ -44,83 +44,6 @@ from sklearn.manifold import TSNE
 import numpy as np
 import matplotlib.cm as cm
 
-def save_tsne_plot(emb1, emb2, step, output_dir, use_wandb=False):
-    """
-    Saves a t-SNE plot of the embeddings.
-    emb1: Encoder embeddings (B, D)
-    emb2: Carpet embeddings (B, D)
-    """
-    B = emb1.size(0)
-    
-    # Combine embeddings
-    combined = torch.cat([emb1, emb2], dim=0).detach().cpu().numpy()
-    
-    # Run t-SNE
-    tsne = TSNE(n_components=2, random_state=42, perplexity=min(30, B-1))
-    reduced = tsne.fit_transform(combined)
-    
-    # Split back
-    reduced_1 = reduced[:B]
-    reduced_2 = reduced[B:]
-    
-    fig = plt.figure(figsize=(10, 8))
-    
-    # Create colors for each pair
-    colors = cm.rainbow(np.linspace(0, 1, B))
-    
-    # Plot
-    for i in range(B):
-        plt.scatter(reduced_1[i, 0], reduced_1[i, 1], color=colors[i], marker='o', s=50, label='Encoder' if i == 0 else "")
-        plt.scatter(reduced_2[i, 0], reduced_2[i, 1], color=colors[i], marker='^', s=50, label='Carpet' if i == 0 else "")
-        # Draw line between pair
-        plt.plot([reduced_1[i, 0], reduced_2[i, 0]], [reduced_1[i, 1], reduced_2[i, 1]], color=colors[i], alpha=0.3)
-        
-    plt.title(f"t-SNE Visualization (Step {step})")
-    plt.legend()
-    
-    # Save to disk
-    plots_dir = os.path.join(output_dir, "plots")
-    os.makedirs(plots_dir, exist_ok=True)
-    plt.savefig(os.path.join(plots_dir, f"tsne_step_{step:06d}.png"))
-    
-    # Log to wandb
-    if use_wandb:
-        import wandb
-        wandb.log({"val/tsne_plot": wandb.Image(fig)}, step=step)
-        
-    plt.close(fig)
-
-    return os.path.join(plots_dir, f"tsne_step_{step:06d}.png")
-
-
-def similarity_heatmap(sim_matrix, step, output_dir, use_wandb=False):
-    """
-    Saves a heatmap of the similarity matrix.
-    Returns the path to the saved plot.
-    """ 
-    sim_matrix_np = sim_matrix.detach().cpu().numpy()
-    
-    fig = plt.figure(figsize=(10, 8))
-    plt.imshow(sim_matrix_np, cmap='viridis', interpolation='nearest')
-    plt.colorbar()
-    plt.title(f"Similarity Matrix (Step {step})")
-    plt.xlabel("Carpet Embeddings")
-    plt.ylabel("Encoder Tokens")
-    
-    # Save plot
-    plots_dir = os.path.join(output_dir, "plots")
-    os.makedirs(plots_dir, exist_ok=True)
-    path = os.path.join(plots_dir, f"sim_matrix_step_{step:06d}.png")
-    plt.savefig(path)
-    plt.close(fig)
-
-    if use_wandb:
-        wandb.log({
-            f"similarity_matrix/step": wandb.Image(path)
-        }, step=step)
-        
-    return path
-
 
 def extract_embeddings(policy, batch, device):
     policy.eval()
@@ -254,6 +177,49 @@ def contrastive_loss(emb1, emb2, temperature=0.07):
     return (loss_1 + loss_2) / 2
 
 
+def tsne_plot(emb1, emb2, step, output_dir, tag="default", use_wandb=False):
+    """
+    Saves a t-SNE plot of the embeddings.
+    Returns the path to the saved plot.
+    """
+    B = emb1.size(0)
+    
+    # Combine embeddings
+    combined = torch.cat([emb1, emb2], dim=0).detach().cpu().numpy()
+    
+    # Run t-SNE
+    tsne = TSNE(n_components=2, random_state=42, perplexity=min(30, B-1))
+    reduced = tsne.fit_transform(combined)
+    
+    # Split back
+    reduced_1 = reduced[:B]
+    reduced_2 = reduced[B:]
+    
+    fig = plt.figure(figsize=(10, 8))
+    
+    # Create colors for each pair
+    colors = cm.rainbow(np.linspace(0, 1, B))
+    
+    # Plot
+    for i in range(B):
+        plt.scatter(reduced_1[i, 0], reduced_1[i, 1], color=colors[i], marker='o', s=50, label='Encoder' if i == 0 else "")
+        plt.scatter(reduced_2[i, 0], reduced_2[i, 1], color=colors[i], marker='^', s=50, label=f'{tag.capitalize()}' if i == 0 else "")
+        # Draw line between pair
+        plt.plot([reduced_1[i, 0], reduced_2[i, 0]], [reduced_1[i, 1], reduced_2[i, 1]], color=colors[i], alpha=0.3)
+        
+    plt.title(f"t-SNE Visualization ({tag}, Step {step})")
+    plt.legend()
+    
+    # Save to disk
+    plots_dir = os.path.join(output_dir, "plots")
+    os.makedirs(plots_dir, exist_ok=True)
+    path = os.path.join(plots_dir, f"tsne_{tag}_step_{step:06d}.png")
+    plt.savefig(path)
+    
+    plt.close(fig)
+    return path
+
+
 def accuracy(embedding1: torch.Tensor, embedding2: torch.Tensor, topk=(1, 5, 10)):
     """
     Computes top-k accuracy for both directions (1->2 and 2->1).
@@ -301,15 +267,36 @@ def compute_similarity_matrix(emb1, emb2):
     return emb1_norm @ emb2_norm.T
 
 
-def validate(policy, val_loader, device, head_encoder, head_third, step, cfg):
+def similarity_heatmap(sim_matrix, step, tag="default"):
+    """
+    Saves a heatmap of the similarity matrix.
+    Returns the path to the saved plot.
+    """ 
+    sim_matrix_np = sim_matrix.detach().cpu().numpy()
+    
+    fig = plt.figure(figsize=(10, 8))
+    plt.imshow(sim_matrix_np, cmap='viridis', interpolation='nearest')
+    plt.colorbar()
+    plt.title(f"Similarity Matrix ({tag}, Step {step})")
+    plt.xlabel(f"{tag.capitalize()} Embeddings")
+    plt.ylabel("Encoder Embeddings")
+    
+    img = wandb.Image(fig)
+    plt.close(fig)
+    
+    return img
+
+
+def validate(policy, val_loader, device, head_encoder, head_third, head_carpet, step):
     policy.eval()
     head_encoder.eval()
     head_third.eval()
+    head_carpet.eval()
     
     total_loss = 0
     total_samples = 0
     metrics_accum = {}
-    heatmap_path = None
+    heatmap_paths = {}
     
     # Run validation on a few batches (e.g., 10 batches or full val set)
     # For speed, let's limit to 50 batches max
@@ -324,33 +311,41 @@ def validate(policy, val_loader, device, head_encoder, head_third, step, cfg):
                 if isinstance(batch[key], torch.Tensor):
                     batch[key] = batch[key].to(device, non_blocking=True)
 
-            encoder_tokens, encoder_pos, third_embeddings = extract_embeddings(policy, batch, device)
+            ego_embedding, third_embeddings, carpet_embeddings = extract_embeddings(policy, batch, device)
             
-            if third_embeddings is not None:
-                feat_encoder = encoder_tokens.mean(dim=0) 
+            if third_embeddings is not None and carpet_embeddings is not None:
+                feat_encoder = ego_embedding.mean(dim=0) 
                 feat_third = third_embeddings.mean(dim=0)
+                feat_carpet = carpet_embeddings.mean(dim=0)
 
                 proj_encoder = head_encoder(feat_encoder)
                 proj_third = head_third(feat_third)
+                proj_carpet = head_carpet(feat_carpet)
 
-                loss = contrastive_loss(proj_encoder, proj_third)
+                loss_third = contrastive_loss(proj_encoder, proj_third)
+                loss_carpet = contrastive_loss(proj_encoder, proj_carpet)
+                loss = loss_third + loss_carpet
                 
                 batch_size = feat_encoder.size(0)
                 total_loss += loss.item() * batch_size
                 total_samples += batch_size
                 
-                # Accuracy metrics
-                acc_metrics = accuracy(proj_encoder, proj_carpet, topk=(1, 5, 10))
-                for k, v in acc_metrics.items():
-                    if k not in metrics_accum:
-                        metrics_accum[k] = 0.0
-                    metrics_accum[k] += v * batch_size
+                # Accumulate accuracy metrics
+                for name, proj_target in [("third", proj_third), ("carpet", proj_carpet)]:
+                    acc_metrics = accuracy(proj_encoder, proj_target, topk=(1, 5, 10))
+                    for k, v in acc_metrics.items():
+                        key_name = f"{name}_{k}"
+                        if key_name not in metrics_accum:
+                            metrics_accum[key_name] = 0.0
+                        metrics_accum[key_name] += v * batch_size
 
                 # Save heatmap for the first batch only
                 if i == 0:
-                     sim_matrix = compute_similarity_matrix(proj_encoder, proj_carpet)
-                     # Don't log to wandb here, just save to disk and return path
-                     heatmap_path = similarity_heatmap(sim_matrix, step, cfg.output_dir, use_wandb=False)
+                     sim_matrix_third = compute_similarity_matrix(proj_encoder, proj_third)
+                     heatmap_paths["third"] = similarity_heatmap(sim_matrix_third, step, tag="third")
+                     
+                     sim_matrix_carpet = compute_similarity_matrix(proj_encoder, proj_carpet)
+                     heatmap_paths["carpet"] = similarity_heatmap(sim_matrix_carpet, step, tag="carpet")
 
     val_metrics = {}
     if total_samples > 0:
@@ -369,8 +364,9 @@ def validate(policy, val_loader, device, head_encoder, head_third, step, cfg):
     policy.train()
     head_encoder.train()
     head_third.train()
+    head_carpet.train()
     
-    return val_metrics, heatmap_path
+    return val_metrics, heatmap_paths
 
 
 def split_dataset_by_episodes(dataset, val_ratio=0.1):
@@ -403,6 +399,26 @@ def split_dataset_by_episodes(dataset, val_ratio=0.1):
     val_dataset = torch.utils.data.Subset(dataset, val_indices)
     
     return train_dataset, val_dataset
+
+
+def save_checkpoint(step, output_dir, head_encoder, head_third, head_carpet, optimizer):
+    """
+    Saves model checkpoint.
+    """
+    checkpoint_dir = os.path.join(output_dir, "checkpoints")
+    os.makedirs(checkpoint_dir, exist_ok=True)
+    
+    checkpoint_path = os.path.join(checkpoint_dir, f"checkpoint_step_{step:06d}.pth")
+    
+    torch.save({
+        'step': step,
+        'head_encoder_state_dict': head_encoder.state_dict(),
+        'head_third_state_dict': head_third.state_dict(),
+        'head_carpet_state_dict': head_carpet.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+    }, checkpoint_path)
+    
+    logging.info(f"Saved checkpoint to {checkpoint_path}")
 
 
 @parser.wrap()
@@ -450,13 +466,16 @@ def train(cfg: TrainPipelineConfig):
     
     head_encoder = ProjectionHead(embed_dim, proj_dim).to(device)
     head_third = ProjectionHead(embed_dim, proj_dim).to(device)
+    head_carpet = ProjectionHead(embed_dim, proj_dim).to(device)
     
     optimizer = torch.optim.Adam(
-        list(head_encoder.parameters()) + list(head_third.parameters()), 
+        list(head_encoder.parameters()) + list(head_third.parameters()) + list(head_carpet.parameters()), 
         lr=1e-4
     )
 
-    logging.info(colored("Output dir:", "yellow", attrs=["bold"]) + f" {cfg.output_dir}")
+    run_name = os.path.basename(output_dir) # outputs/train/2025-04-05/06-30-11_act
+    output_dir = os.path.join("/workspace", run_name)
+    logging.info(colored("Output dir:", "yellow", attrs=["bold"]) + f" {output_dir}")
     logging.info(f"{dataset.num_frames=} ({format_big_number(dataset.num_frames)})")
 
     # DataLoaders
@@ -489,15 +508,20 @@ def train(cfg: TrainPipelineConfig):
                 batch[key] = batch[key].to(device, non_blocking=True)
 
         ego_embedding, third_embeddings, carpet_embeddings = extract_embeddings(policy, batch, device)
-        
-        if third_embeddings is not None:
+
+        if third_embeddings is not None and carpet_embeddings is not None:
             feat_encoder = ego_embedding.mean(dim=0) 
             feat_third = third_embeddings.mean(dim=0)
+            feat_carpet = carpet_embeddings.mean(dim=0)
 
             proj_encoder = head_encoder(feat_encoder)
             proj_third = head_third(feat_third)
+            proj_carpet = head_carpet(feat_carpet)
 
-            loss = contrastive_loss(proj_encoder, proj_third)
+            loss_third = contrastive_loss(proj_encoder, proj_third)
+            loss_carpet = contrastive_loss(proj_encoder, proj_carpet)
+            
+            loss = loss_third + loss_carpet
 
             optimizer.zero_grad()
             loss.backward()
@@ -506,55 +530,57 @@ def train(cfg: TrainPipelineConfig):
             wandb_metrics = {}
 
             if step % 10 == 0:
-                acc_metrics = accuracy(proj_encoder, proj_third, topk=(1, 5, 10))
+                # Metrics for Third Cam
+                acc_metrics_third = accuracy(proj_encoder, proj_third, topk=(1, 5, 10))
+                sim_matrix_third = compute_similarity_matrix(proj_encoder, proj_third)
                 
-                sim_matrix = compute_similarity_matrix(proj_encoder, proj_third)
-                B = sim_matrix.size(0)
-                
-                avg_pos_sim = torch.diag(sim_matrix).mean().item()
-                
-                if B > 1:
-                    avg_neg_sim = (sim_matrix.sum() - torch.diag(sim_matrix).sum()) / (B * B - B)
-                    avg_neg_sim = avg_neg_sim.item()
-                else:
-                    avg_neg_sim = 0.0
+                # Metrics for Carpet
+                acc_metrics_carpet = accuracy(proj_encoder, proj_carpet, topk=(1, 5, 10))
+                sim_matrix_carpet = compute_similarity_matrix(proj_encoder, proj_carpet)
 
-                log_msg = f"Step {step}: Train Loss = {loss.item():.4f}"
-                log_msg += f", Avg Pos Sim: {avg_pos_sim:.4f}, Avg Neg Sim: {avg_neg_sim:.4f}"
-                
                 if cfg.wandb.enable:
                     wandb_metrics.update({
                         "train/loss": loss.item(),
-                        "train/avg_pos_sim": avg_pos_sim,
-                        "train/avg_neg_sim": avg_neg_sim,
+                        "train/loss_third": loss_third.item(),
+                        "train/loss_carpet": loss_carpet.item(),
                     })
-                    for k, v in acc_metrics.items():
-                        wandb_metrics[f"train/{k}"] = v
-                
-                heatmap_path = similarity_heatmap(sim_matrix, step, cfg.output_dir, use_wandb=False)
+                    for k, v in acc_metrics_third.items():
+                        wandb_metrics[f"train/third_{k}"] = v
+                    for k, v in acc_metrics_carpet.items():
+                        wandb_metrics[f"train/carpet_{k}"] = v
+                                       
                 if cfg.wandb.enable:
-                    wandb_metrics["train/similarity_matrix"] = wandb.Image(heatmap_path)
+                    wandb_metrics["train/similarity_matrix_third"] = similarity_heatmap(sim_matrix_third, step, tag="third")
+                    wandb_metrics["train/similarity_matrix_carpet"] = similarity_heatmap(sim_matrix_carpet, step, tag="carpet")
 
         # Validation
         if step > 0 and step % 1000 == 0:
-            val_metrics, val_heatmap_path = validate(policy, val_loader, device, head_encoder, head_third, step, cfg)
+            val_metrics, val_paths = validate(policy, val_loader, device, head_encoder, head_third, head_carpet, step, cfg)
             
             if cfg.wandb.enable:
                 wandb_metrics.update(val_metrics)
-                if val_heatmap_path:
-                    wandb_metrics["val/similarity_matrix"] = wandb.Image(val_heatmap_path)
+                # Log images if paths exist
+                if "third" in val_paths:
+                    wandb_metrics["val/similarity_matrix_third"] = similarity_heatmap(val_paths["third"], step, tag="third")
+                if "carpet" in val_paths:
+                    wandb_metrics["val/similarity_matrix_carpet"] = similarity_heatmap(val_paths["carpet"], step, tag="carpet")
             
-            # Save t-SNE plot
+            # Save t-SNE plot (Optional: for both?)
             if 'proj_encoder' in locals() and 'proj_third' in locals():
-                tsne_path = save_tsne_plot(proj_encoder, proj_third, step, cfg.output_dir, use_wandb=False)
+                tsne_path = tsne_plot(proj_encoder, proj_third, step, tag="third")
                 if cfg.wandb.enable:
-                    wandb_metrics["val/tsne_plot"] = wandb.Image(tsne_path)
+                    wandb_metrics["val/tsne_plot_third"] = tsne_path
+            
+            # Save Checkpoint
+            save_checkpoint(step, output_dir, head_encoder, head_third, head_carpet, optimizer)
 
         # Log to WandB
         if cfg.wandb.enable and wandb_metrics:
             wandb.log(wandb_metrics, step=step)
 
     logging.info("End")
+    # Save final checkpoint
+    save_checkpoint(cfg.steps, output_dir, head_encoder, head_third, head_carpet, optimizer)
 
 
 if __name__ == "__main__":
