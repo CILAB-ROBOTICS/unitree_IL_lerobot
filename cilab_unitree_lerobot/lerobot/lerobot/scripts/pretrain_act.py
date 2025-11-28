@@ -22,6 +22,7 @@ matplotlib.use('Agg') # Use non-interactive backend
 import matplotlib.pyplot as plt
 import os
 import wandb
+from tqdm import tqdm
 
 import einops
 import torch
@@ -29,7 +30,6 @@ import torch.nn as nn
 from termcolor import colored
 
 from lerobot.common.datasets.factory import make_dataset
-from lerobot.common.datasets.sampler import EpisodeAwareSampler
 from lerobot.common.datasets.utils import cycle
 from lerobot.common.policies.factory import make_policy
 from lerobot.common.utils.random_utils import set_seed
@@ -93,7 +93,7 @@ def save_tsne_plot(emb1, emb2, step, output_dir, use_wandb=False):
     return os.path.join(plots_dir, f"tsne_step_{step:06d}.png")
 
 
-def save_similarity_heatmap(sim_matrix, step, output_dir, use_wandb=False):
+def similarity_heatmap(sim_matrix, step, output_dir, use_wandb=False):
     """
     Saves a heatmap of the similarity matrix.
     Returns the path to the saved plot.
@@ -165,6 +165,7 @@ def extract_embeddings(policy, batch, device):
             all_2d_features = []
             all_2d_pos_embeds = []
             carpet_features = []
+            third_features = []
 
             for img_key, img in zip(model.config.image_features, batch["observation.images"]):
                 if "tactile" in img_key and tactile_backbone is not None:
@@ -175,7 +176,7 @@ def extract_embeddings(policy, batch, device):
                     tac_pos_embed = einops.rearrange(tac_pos_embed, "b c h w -> (h w) b c")
                     all_2d_features.append(tac_features)
                     all_2d_pos_embeds.append(tac_pos_embed)
-                elif "tactile" not in img_key and "carpet" not in img_key and hasattr(model, "backbone"):
+                elif "cam_left_high" in img_key and hasattr(model, "backbone"):
                     cam_features = model.backbone(img)["feature_map"]
                     cam_pos_embed = model.encoder_cam_feat_pos_embed(cam_features).to(dtype=cam_features.dtype)
                     cam_features = model.encoder_img_feat_input_proj(cam_features)
@@ -184,6 +185,12 @@ def extract_embeddings(policy, batch, device):
                     cam_pos_embed = einops.rearrange(cam_pos_embed, "b c h w -> (h w) b c")
                     all_2d_features.append(cam_features)
                     all_2d_pos_embeds.append(cam_pos_embed)
+                elif "cam_third" in img_key and hasattr(model, "backbone"):
+                    cam_features = model.backbone(img)["feature_map"]
+                    cam_features = model.encoder_img_feat_input_proj(cam_features)
+
+                    cam_features = einops.rearrange(cam_features, "b c h w -> (h w) b c")
+                    third_features.append(cam_features)
                 elif "carpet" in img_key and hasattr(model, "backbone"):
                     car_features = model.backbone(img)["feature_map"]
                     car_features = model.encoder_img_feat_input_proj(car_features)
@@ -195,17 +202,20 @@ def extract_embeddings(policy, batch, device):
                 tokens_2d = torch.cat(all_2d_features, dim=0)
                 pos_embed_2d = torch.cat(all_2d_pos_embeds, dim=0)
             
+            if third_features:
+                third_embeddings = torch.cat(third_features, dim=0)
+
             if carpet_features:
                 carpet_embeddings = torch.cat(carpet_features, dim=0)
-
+        
         if tokens_2d is not None and tokens_2d.numel() > 0:
-            encoder_tokens = torch.cat([tokens_1d, tokens_2d], dim=0)
+            ego_embedding = torch.cat([tokens_1d, tokens_2d], dim=0)
             encoder_pos = torch.cat([pos_embed_1d, pos_embed_2d], dim=0)
         else:
-            encoder_tokens = tokens_1d
+            ego_embedding = tokens_1d
             encoder_pos = pos_embed_1d
 
-        return encoder_tokens, encoder_pos, carpet_embeddings
+        return ego_embedding, third_embeddings, carpet_embeddings
 
 
 class ProjectionHead(nn.Module):
@@ -221,7 +231,7 @@ class ProjectionHead(nn.Module):
         return self.net(x)
 
 
-def compute_contrastive_loss(emb1, emb2, temperature=0.07):
+def contrastive_loss(emb1, emb2, temperature=0.07):
     """
     Computes InfoNCE loss (CLIP-style) between two batches of embeddings.
     emb1, emb2: (Batch_Size, Dim)
@@ -291,10 +301,10 @@ def compute_similarity_matrix(emb1, emb2):
     return emb1_norm @ emb2_norm.T
 
 
-def validate(policy, val_loader, device, head_encoder, head_carpet, step, cfg):
+def validate(policy, val_loader, device, head_encoder, head_third, step, cfg):
     policy.eval()
     head_encoder.eval()
-    head_carpet.eval()
+    head_third.eval()
     
     total_loss = 0
     total_samples = 0
@@ -314,22 +324,22 @@ def validate(policy, val_loader, device, head_encoder, head_carpet, step, cfg):
                 if isinstance(batch[key], torch.Tensor):
                     batch[key] = batch[key].to(device, non_blocking=True)
 
-            encoder_tokens, encoder_pos, carpet_embeddings = extract_embeddings(policy, batch, device)
+            encoder_tokens, encoder_pos, third_embeddings = extract_embeddings(policy, batch, device)
             
-            if carpet_embeddings is not None:
+            if third_embeddings is not None:
                 feat_encoder = encoder_tokens.mean(dim=0) 
-                feat_carpet = carpet_embeddings.mean(dim=0)
+                feat_third = third_embeddings.mean(dim=0)
 
                 proj_encoder = head_encoder(feat_encoder)
-                proj_carpet = head_carpet(feat_carpet)
+                proj_third = head_third(feat_third)
 
-                loss = compute_contrastive_loss(proj_encoder, proj_carpet)
+                loss = contrastive_loss(proj_encoder, proj_third)
                 
                 batch_size = feat_encoder.size(0)
                 total_loss += loss.item() * batch_size
                 total_samples += batch_size
                 
-                # Accumulate accuracy metrics
+                # Accuracy metrics
                 acc_metrics = accuracy(proj_encoder, proj_carpet, topk=(1, 5, 10))
                 for k, v in acc_metrics.items():
                     if k not in metrics_accum:
@@ -340,7 +350,7 @@ def validate(policy, val_loader, device, head_encoder, head_carpet, step, cfg):
                 if i == 0:
                      sim_matrix = compute_similarity_matrix(proj_encoder, proj_carpet)
                      # Don't log to wandb here, just save to disk and return path
-                     heatmap_path = save_similarity_heatmap(sim_matrix, step, cfg.output_dir, use_wandb=False)
+                     heatmap_path = similarity_heatmap(sim_matrix, step, cfg.output_dir, use_wandb=False)
 
     val_metrics = {}
     if total_samples > 0:
@@ -358,7 +368,7 @@ def validate(policy, val_loader, device, head_encoder, head_carpet, step, cfg):
         
     policy.train()
     head_encoder.train()
-    head_carpet.train()
+    head_third.train()
     
     return val_metrics, heatmap_path
 
@@ -403,7 +413,7 @@ def train(cfg: TrainPipelineConfig):
     if cfg.seed is not None:
         set_seed(cfg.seed)
 
-    # Check device is available
+    # Check available device
     device = get_safe_torch_device(cfg.policy.device, log=True)
     torch.backends.cudnn.benchmark = True
     torch.backends.cuda.matmul.allow_tf32 = True
@@ -422,17 +432,15 @@ def train(cfg: TrainPipelineConfig):
     # Load dataset
     dataset = make_dataset(cfg)
     
-    # Split into Train (80%) and Val (20%) by Episodes
+    # Split dataset by episodes
     val_ratio = 0.2
     train_dataset, val_dataset = split_dataset_by_episodes(dataset, val_ratio)
-    
-    logging.info(f"Dataset split (by episodes): Train={len(train_dataset)} frames, Val={len(val_dataset)} frames")
+    logging.info(f"Dataset split: Train={len(train_dataset)}, Val={len(val_dataset)}")
 
-    logging.info("Creating policy (for backbone & normalization)")
-
+    logging.info("Creating policy")
     policy = make_policy(
         cfg=cfg.policy,
-        ds_meta=dataset.meta, # Use meta from full dataset
+        ds_meta=dataset.meta,
     )
     policy.to(device)
 
@@ -441,28 +449,17 @@ def train(cfg: TrainPipelineConfig):
     proj_dim = 256 
     
     head_encoder = ProjectionHead(embed_dim, proj_dim).to(device)
-    head_carpet = ProjectionHead(embed_dim, proj_dim).to(device)
+    head_third = ProjectionHead(embed_dim, proj_dim).to(device)
     
     optimizer = torch.optim.Adam(
-        list(head_encoder.parameters()) + list(head_carpet.parameters()), 
+        list(head_encoder.parameters()) + list(head_third.parameters()), 
         lr=1e-4
     )
 
     logging.info(colored("Output dir:", "yellow", attrs=["bold"]) + f" {cfg.output_dir}")
-    logging.info(f"{full_dataset.num_frames=} ({format_big_number(full_dataset.num_frames)})")
+    logging.info(f"{dataset.num_frames=} ({format_big_number(dataset.num_frames)})")
 
-    if hasattr(cfg.policy, "drop_n_last_frames"):
-        shuffle = False
-        sampler = EpisodeAwareSampler(
-            full_dataset.episode_data_index,
-            drop_n_last_frames=cfg.policy.drop_n_last_frames,
-            shuffle=True,
-        )
-    else:
-        shuffle = True
-        sampler = None
-
-    # Create DataLoaders
+    # DataLoaders
     train_loader = torch.utils.data.DataLoader(
         train_dataset,
         num_workers=cfg.num_workers,
@@ -471,7 +468,7 @@ def train(cfg: TrainPipelineConfig):
         pin_memory=device.type != "cpu",
         drop_last=True,
     )
-    
+
     val_loader = torch.utils.data.DataLoader(
         val_dataset,
         num_workers=cfg.num_workers,
@@ -480,28 +477,27 @@ def train(cfg: TrainPipelineConfig):
         pin_memory=device.type != "cpu",
         drop_last=False,
     )
-    
-    dl_iter = cycle(train_loader)
 
+    dl_iter = cycle(train_loader)
     logging.info("Start extracting embeddings...")
 
-    for step in range(cfg.steps):
+    for step in tqdm(range(cfg.steps)):
         batch = next(dl_iter)
 
         for key in batch:
             if isinstance(batch[key], torch.Tensor):
                 batch[key] = batch[key].to(device, non_blocking=True)
 
-        encoder_tokens, encoder_pos, carpet_embeddings = extract_embeddings(policy, batch, device)
+        ego_embedding, third_embeddings, carpet_embeddings = extract_embeddings(policy, batch, device)
         
-        if carpet_embeddings is not None:
-            feat_encoder = encoder_tokens.mean(dim=0) 
-            feat_carpet = carpet_embeddings.mean(dim=0)
+        if third_embeddings is not None:
+            feat_encoder = ego_embedding.mean(dim=0) 
+            feat_third = third_embeddings.mean(dim=0)
 
             proj_encoder = head_encoder(feat_encoder)
-            proj_carpet = head_carpet(feat_carpet)
+            proj_third = head_third(feat_third)
 
-            loss = compute_contrastive_loss(proj_encoder, proj_carpet)
+            loss = contrastive_loss(proj_encoder, proj_third)
 
             optimizer.zero_grad()
             loss.backward()
@@ -510,16 +506,13 @@ def train(cfg: TrainPipelineConfig):
             wandb_metrics = {}
 
             if step % 10 == 0:
-                acc_metrics = accuracy(proj_encoder, proj_carpet, topk=(1, 5, 10))
+                acc_metrics = accuracy(proj_encoder, proj_third, topk=(1, 5, 10))
                 
-                # Compute Similarity Stats
-                sim_matrix = compute_similarity_matrix(proj_encoder, proj_carpet)
+                sim_matrix = compute_similarity_matrix(proj_encoder, proj_third)
                 B = sim_matrix.size(0)
                 
-                # Avg Positive Similarity (Diagonal)
                 avg_pos_sim = torch.diag(sim_matrix).mean().item()
                 
-                # Avg Negative Similarity (Off-diagonal)
                 if B > 1:
                     avg_neg_sim = (sim_matrix.sum() - torch.diag(sim_matrix).sum()) / (B * B - B)
                     avg_neg_sim = avg_neg_sim.item()
@@ -529,11 +522,6 @@ def train(cfg: TrainPipelineConfig):
                 log_msg = f"Step {step}: Train Loss = {loss.item():.4f}"
                 log_msg += f", Avg Pos Sim: {avg_pos_sim:.4f}, Avg Neg Sim: {avg_neg_sim:.4f}"
                 
-                for k, v in acc_metrics.items():
-                    log_msg += f", {k} = {v:.1f}%"
-                #logging.info(log_msg)
-                
-                # Collect Train Metrics
                 if cfg.wandb.enable:
                     wandb_metrics.update({
                         "train/loss": loss.item(),
@@ -542,19 +530,14 @@ def train(cfg: TrainPipelineConfig):
                     })
                     for k, v in acc_metrics.items():
                         wandb_metrics[f"train/{k}"] = v
-                    
-                # Save Heatmap (don't log yet)
-                heatmap_path = save_similarity_heatmap(sim_matrix, step, cfg.output_dir, use_wandb=False)
+                
+                heatmap_path = similarity_heatmap(sim_matrix, step, cfg.output_dir, use_wandb=False)
                 if cfg.wandb.enable:
-                     wandb_metrics["train/similarity_matrix"] = wandb.Image(heatmap_path)
+                    wandb_metrics["train/similarity_matrix"] = wandb.Image(heatmap_path)
 
-        else:
-            if step % 10 == 0:
-                logging.info(f"Step {step}: Carpet embeddings not found, skipping loss calculation.")
-        
-        # Validation Loop (every 1000 steps)
+        # Validation
         if step > 0 and step % 1000 == 0:
-            val_metrics, val_heatmap_path = validate(policy, val_loader, device, head_encoder, head_carpet, step, cfg)
+            val_metrics, val_heatmap_path = validate(policy, val_loader, device, head_encoder, head_third, step, cfg)
             
             if cfg.wandb.enable:
                 wandb_metrics.update(val_metrics)
@@ -562,16 +545,16 @@ def train(cfg: TrainPipelineConfig):
                     wandb_metrics["val/similarity_matrix"] = wandb.Image(val_heatmap_path)
             
             # Save t-SNE plot
-            if 'proj_encoder' in locals() and 'proj_carpet' in locals():
-                tsne_path = save_tsne_plot(proj_encoder, proj_carpet, step, cfg.output_dir, use_wandb=False)
+            if 'proj_encoder' in locals() and 'proj_third' in locals():
+                tsne_path = save_tsne_plot(proj_encoder, proj_third, step, cfg.output_dir, use_wandb=False)
                 if cfg.wandb.enable:
                     wandb_metrics["val/tsne_plot"] = wandb.Image(tsne_path)
 
-        # Log to WandB (Once per step)
+        # Log to WandB
         if cfg.wandb.enable and wandb_metrics:
             wandb.log(wandb_metrics, step=step)
 
-    logging.info("End of extraction")
+    logging.info("End")
 
 
 if __name__ == "__main__":
