@@ -1,18 +1,9 @@
-#!/usr/bin/env python
+'''
+       . ･ﾟ✧
+    <(  • ᴥ • )>     
+     /||||||||\ 
+'''
 
-# Copyright 2024 The HuggingFace Inc. team. All rights reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 import logging
 import time
 from pprint import pformat
@@ -176,7 +167,6 @@ def contrastive_loss(emb1, emb2, temperature=0.07):
     
     return (loss_1 + loss_2) / 2
 
-
 def tsne_plot(emb1, emb2, step, output_dir, tag="default"):
     """
     Saves a t-SNE plot of the embeddings.
@@ -216,8 +206,9 @@ def tsne_plot(emb1, emb2, step, output_dir, tag="default"):
     path = os.path.join(plots_dir, f"tsne_{tag}_step_{step:06d}.png")
     plt.savefig(path)
     
+    img = wandb.Image(fig)
     plt.close(fig)
-    return path
+    return img
 
 
 def accuracy(embedding1: torch.Tensor, embedding2: torch.Tensor, topk=(1, 5, 10)):
@@ -287,21 +278,16 @@ def similarity_heatmap(sim_matrix, step, tag="default"):
     return img
 
 
-def validate(policy, val_loader, device, head_encoder, head_third=None, head_carpet=None, step=0, mode="both"):
+def validate(policy, val_loader, encoder1, encoder2, step, m, cfg):
     policy.eval()
-    head_encoder.eval()
-    if head_third: head_third.eval()
-    if head_carpet: head_carpet.eval()
+    encoder1.eval()
+    encoder2.eval()
     
     total_loss = 0
     total_samples = 0
     metrics_accum = {}
     
-    sim_matrix_third = None
-    sim_matrix_carpet = None
-    
-    # Run validation on a few batches (e.g., 10 batches or full val set)
-    # For speed, let's limit to 50 batches max
+    sim = None
     max_val_batches = 50
     
     with torch.no_grad():
@@ -311,97 +297,53 @@ def validate(policy, val_loader, device, head_encoder, head_third=None, head_car
                 
             for key in batch:
                 if isinstance(batch[key], torch.Tensor):
-                    batch[key] = batch[key].to(device, non_blocking=True)
+                    batch[key] = batch[key].to(cfg.policy.device, non_blocking=True)
 
-            ego_embedding, third_embeddings, carpet_embeddings = extract_embeddings(policy, batch, device)
+            ego_emb, third_emb, carpet_emb = extract_embeddings(policy, batch, cfg.policy.device)
             
-            # Check if we have enough data for the selected mode
-            valid_step = True
-            if mode in ["third", "both"] and third_embeddings is None:
-                valid_step = False
-            if mode in ["carpet", "both"] and carpet_embeddings is None:
-                valid_step = False
+            emb = {"encoder": ego_emb.mean(dim=0),}
 
-            if valid_step:
-                feat_encoder = ego_embedding.mean(dim=0) 
-                
-                feat_third = None
-                if mode in ["third", "both"] and third_embeddings is not None:
-                    feat_third = third_embeddings.mean(dim=0)
-                    
-                feat_carpet = None
-                if mode in ["carpet", "both"] and carpet_embeddings is not None:
-                    feat_carpet = carpet_embeddings.mean(dim=0)
+            if m == "third" and third_emb is not None:
+                emb["counter"] = third_emb.mean(dim=0)
+            elif m == "carpet" and carpet_emb is not None:
+                emb["counter"] = carpet_emb.mean(dim=0)
+            else:
+                logging.info(f"Skip batch: missing modality {m}")
+                continue
 
-                proj_encoder = head_encoder(feat_encoder)
-                
-                proj_third = None
-                if mode in ["third", "both"] and third_embeddings is not None and head_third is not None:
-                    proj_third = head_third(feat_third)
-                    
-                proj_carpet = None
-                if mode in ["carpet", "both"] and carpet_embeddings is not None and head_carpet is not None:
-                    proj_carpet = head_carpet(feat_carpet)
+            proj_ego = encoder1(emb["encoder"])
+            proj_counter = encoder2(emb["counter"])
 
-                loss = torch.tensor(0.0, device=device)
-                
-                if proj_third is not None:
-                    loss_third = contrastive_loss(proj_encoder, proj_third)
-                    loss += loss_third
-                
-                if proj_carpet is not None:
-                    loss_carpet = contrastive_loss(proj_encoder, proj_carpet)
-                    loss += loss_carpet
-                
-                batch_size = feat_encoder.size(0)
-                total_loss += loss.item() * batch_size
-                total_samples += batch_size
-                
-                # Accumulate accuracy metrics
-                if proj_third is not None:
-                    acc_metrics = accuracy(proj_encoder, proj_third, topk=(1, 5, 10))
-                    for k, v in acc_metrics.items():
-                        key_name = f"third_{k}"
-                        if key_name not in metrics_accum:
-                            metrics_accum[key_name] = 0.0
-                        metrics_accum[key_name] += v * batch_size
-                        
-                if proj_carpet is not None:
-                    acc_metrics = accuracy(proj_encoder, proj_carpet, topk=(1, 5, 10))
-                    for k, v in acc_metrics.items():
-                        key_name = f"carpet_{k}"
-                        if key_name not in metrics_accum:
-                            metrics_accum[key_name] = 0.0
-                        metrics_accum[key_name] += v * batch_size
+            loss = contrastive_loss(proj_ego, proj_counter)
 
-                # Save heatmap for the first batch only
-                if i == 0:
-                     if proj_third is not None:
-                        sim_matrix_third = similarity_matrix(proj_encoder, proj_third)
-                     
-                     if proj_carpet is not None:
-                        sim_matrix_carpet = similarity_matrix(proj_encoder, proj_carpet)
+            batch_size = proj_ego.size(0)
+            total_loss += loss.item() * batch_size
+            total_samples += batch_size
+            
+            acc_metrics = accuracy(proj_ego, proj_counter, topk=(1, 5, 10))
+            for k, v in acc_metrics.items():
+                key_name = f"{m}_{k}"
+                metrics_accum[key_name] = metrics_accum.get(key_name, 0.0) + v * batch_size
+
+            if i == 0:
+                sim_matrix = similarity_matrix(proj_ego, proj_counter)
 
     val_metrics = {}
     if total_samples > 0:
         avg_loss = total_loss / total_samples
-        log_msg = f"Validation Step {step}: Loss = {avg_loss:.4f}"
-        
         val_metrics["val/loss"] = avg_loss
+        
+        log_msg = f"Validation Step {step}: Loss = {avg_loss:.4f}"
         
         for k in metrics_accum:
             avg_acc = metrics_accum[k] / total_samples
-            log_msg += f", {k} = {avg_acc:.1f}%"
             val_metrics[f"val/{k}"] = avg_acc
-            
-        logging.info(colored(log_msg, "green"))
-        
+
     policy.train()
-    head_encoder.train()
-    if head_third: head_third.train()
-    if head_carpet: head_carpet.train()
+    encoder1.train()
+    encoder2.train()
     
-    return sim_matrix_third, sim_matrix_carpet
+    return sim_matrix, val_metrics
 
 
 def split_dataset_by_episodes(dataset, val_ratio=0.1):
@@ -499,20 +441,27 @@ def train(cfg: TrainPipelineConfig):
     embed_dim = policy.config.dim_model
     proj_dim = 256 
     
-    # Loss mode configuration: 'carpet', 'third_cam', 'both'
+    # calculate mode
     mode = os.getenv("MODE", getattr(cfg, "mode", "both"))
-    logging.info(f"Mode: {mode}")
+
+    enabled = []
+    if mode in ["third", "both"]:
+        enabled.append("third")
+    if mode in ["carpet", "both"]:
+        enabled.append("carpet")
+    logging.info(f"Enabled modalities: {enabled}")
 
     head_encoder = ProjectionHead(embed_dim, proj_dim).to(device)
-    if mode in ["carpet", "both"]:
-        head_carpet = ProjectionHead(embed_dim, proj_dim).to(device)
-    if mode in ["third", "both"]:
-        head_third = ProjectionHead(embed_dim, proj_dim).to(device)
-    
-    optimizer = torch.optim.Adam(
-        list(head_encoder.parameters()) + list(head_third.parameters()) + list(head_carpet.parameters()), 
-        lr=1e-4
-    )
+    encoder = {"encoder": head_encoder}
+
+    for m in enabled:
+        encoder[m] = ProjectionHead(embed_dim, proj_dim).to(device)
+
+    params = list(encoder["encoder"].parameters())
+    for m in enabled:
+        params += list(encoder[m].parameters())
+
+    optimizer = torch.optim.Adam(params, lr=1e-4)
 
     run_name = os.path.basename(cfg.output_dir) # outputs/train/2025-04-05/06-30-11_act
     output_dir = os.path.join("/workspace/pretrain/model", run_name)
@@ -543,123 +492,68 @@ def train(cfg: TrainPipelineConfig):
 
     for step in tqdm(range(cfg.steps)):
         batch = next(dl_iter)
+        for k in batch:
+            if isinstance(batch[k], torch.Tensor):
+                batch[k] = batch[k].to(device, non_blocking=True)
 
-        for key in batch:
-            if isinstance(batch[key], torch.Tensor):
-                batch[key] = batch[key].to(device, non_blocking=True)
+        ego_emb, third_emb, carpet_emb = extract_embeddings(policy, batch, device)
 
-        ego_embedding, third_embeddings, carpet_embeddings = extract_embeddings(policy, batch, device)
+        emb = {"encoder": ego_emb.mean(dim=0),}
 
-        # Check if we have enough data for the selected mode
-        valid_step = True
-        if mode in ["third", "both"] and third_embeddings is None:
-            valid_step = False
-        if mode in ["carpet", "both"] and carpet_embeddings is None:
-            valid_step = False
+        if "third" in enabled and third_emb is not None:
+            emb["third"] = third_emb.mean(dim=0)
+        if "carpet" in enabled and carpet_emb is not None:
+            emb["carpet"] = carpet_emb.mean(dim=0)
 
-        if valid_step:
-            feat_encoder = ego_embedding.mean(dim=0) 
-            feat_third = None
-            if mode in ["third", "both"] and third_embeddings is not None:
-                feat_third = third_embeddings.mean(dim=0)
-            feat_carpet = None
-            if mode in ["carpet", "both"] and carpet_embeddings is not None:
-                feat_carpet = carpet_embeddings.mean(dim=0)
+        if any(m not in emb for m in enabled):
+            logging.info("Not enough data for required modality")
+            continue
 
-            proj_encoder = head_encoder(feat_encoder)
-            proj_third = None
-            if mode in ["third", "both"] and third_embeddings is not None:
-                proj_third = head_third(feat_third)
-            proj_carpet = None
-            if mode in ["carpet", "both"] and carpet_embeddings is not None:
-                proj_carpet = head_carpet(feat_carpet)
+        proj = {}
+        for m in emb:
+            proj[m] = encoder[m](emb[m])
 
-            loss = torch.tensor(0.0, device=device)
-            loss_third_val = 0.0
-            loss_carpet_val = 0.0
+        loss = 0
+        loss_details = {}
+        for m in enabled:
+            l = contrastive_loss(proj["encoder"], proj[m])
+            loss += l
+            loss_details[m] = l.item()
 
-            if mode in ["third", "both"] and third_embeddings is not None:
-                loss_third = contrastive_loss(proj_encoder, proj_third)
-                loss += loss_third
-                loss_third_val = loss_third.item()
-            if mode in ["carpet", "both"] and carpet_embeddings is not None:
-                loss_carpet = contrastive_loss(proj_encoder, proj_carpet)
-                loss += loss_carpet
-                loss_carpet_val = loss_carpet.item()
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
 
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
+        wandb_metrics = {}
+        if cfg.wandb.enable:
+            wandb_metrics["train/loss"] = loss.item()
+            for m in enabled:
+                wandb_metrics[f"train/{m}_loss"] = loss_details[m] 
 
-            wandb_metrics = {}
+                acc = accuracy(proj["encoder"], proj[m], topk=(1, 5, 10))
+                for k, v in acc.items():
+                    wandb_metrics[f"train/{m}_{k}"] = v
 
-            if step % 10 == 0:
-                # Metrics for Third Cam
-                if mode in ["third", "both"] and third_embeddings is not None:
-                    acc_metrics_third = accuracy(proj_encoder, proj_third, topk=(1, 5, 10))
-                    sim_matrix_third = similarity_matrix(proj_encoder, proj_third)
-                
-                # Metrics for Carpet
-                if mode in ["carpet", "both"] and carpet_embeddings is not None:
-                    acc_metrics_carpet = accuracy(proj_encoder, proj_carpet, topk=(1, 5, 10))
-                    sim_matrix_carpet = similarity_matrix(proj_encoder, proj_carpet)
+                sim = similarity_matrix(proj["encoder"], proj[m])
+                wandb_metrics[f"train/sim_matrix_{m}"] = similarity_heatmap(sim, step, m)
 
-                if cfg.wandb.enable:
-                    wandb_metrics.update({
-                        "train/loss": loss.item(),
-                    })
-                    if mode in ["third", "both"]:
-                        wandb_metrics["train/loss_third"] = loss_third_val
-                    if mode in ["carpet", "both"]:
-                        wandb_metrics["train/loss_carpet"] = loss_carpet_val
-
-                    if mode in ["third", "both"] and third_embeddings is not None:
-                        for k, v in acc_metrics_third.items():
-                            wandb_metrics[f"train/third_{k}"] = v
-                        wandb_metrics["train/similarity_matrix_third"] = similarity_heatmap(sim_matrix_third, step, tag="third")
-
-                    if mode in ["carpet", "both"] and carpet_embeddings is not None:
-                        for k, v in acc_metrics_carpet.items():
-                            wandb_metrics[f"train/carpet_{k}"] = v
-                        wandb_metrics["train/similarity_matrix_carpet"] = similarity_heatmap(sim_matrix_carpet, step, tag="carpet")
-        else:
-            logging.info("Not enough data for the selected mode")
-
-        # Validation
         if step > 0 and step % 1000 == 0:
             logging.info("Validation...")
+            for m in enabled:
+                sim, val_metrics= validate(policy, val_loader, encoder["encoder"], encoder[m], step, m, cfg)
+                wandb_metrics.update(val_metrics)
+                wandb_metrics[f"val/sim_matrix_{m}"] = similarity_heatmap(sim, step, tag=m)
 
-            sim_matrix_third, sim_matrix_carpet = validate(policy, val_loader, device, head_encoder, head_third, head_carpet, step, mode)
-            
-            if cfg.wandb.enable:
-                if mode in ["third", "both"]:
-                    wandb_metrics["val/similarity_matrix_third"] = similarity_heatmap(sim_matrix_third, step, tag="third")
-                if mode in ["carpet", "both"]:
-                    wandb_metrics["val/similarity_matrix_carpet"] = similarity_heatmap(sim_matrix_carpet, step, tag="carpet")
-            
-            # Save t-SNE plot
-            if 'proj_encoder' in locals():
-                if mode in ["third", "both"] and 'proj_third' in locals() and proj_third is not None:
-                    tsne_path = tsne_plot(proj_encoder, proj_third, step, output_dir, tag="third")
-                    if cfg.wandb.enable:
-                        wandb_metrics["val/tsne_plot_third"] = tsne_path # 주의: tsne_plot이 wandb.Image를 반환하는지 확인 필요
-                
-                if mode in ["carpet", "both"] and 'proj_carpet' in locals() and proj_carpet is not None:
-                    tsne_path = tsne_plot(proj_encoder, proj_carpet, step, output_dir, tag="carpet")
-                    if cfg.wandb.enable:
-                        wandb_metrics["val/tsne_plot_carpet"] = tsne_path
-            
-            # Save Checkpoint
-            save_checkpoint(step, output_dir, head_encoder, head_third, head_carpet, optimizer)
+                tsne = tsne_plot(proj["encoder"], proj[m], step, output_dir, tag=m)
+                wandb_metrics[f"val/tsne_plot_{m}"] = tsne
 
-        # Log to WandB
-        if cfg.wandb.enable and wandb_metrics:
+            os.makedirs(os.path.join(output_dir, "checkpoints"), exist_ok=True)
+            checkpoint_path = os.path.join(output_dir, f"checkpoints/checkpoint_step_{step:05d}.pth")
+            torch.save({"step": step, "policy": policy.state_dict(), "optimizer": optimizer.state_dict(),}, checkpoint_path)
+            logging.info(f"Saved checkpoint to {checkpoint_path}")    
+
+        if wandb_metrics:
             wandb.log(wandb_metrics, step=step)
-
-    logging.info("End")
-    # Save final checkpoint
-    save_checkpoint(cfg.steps, output_dir, head_encoder, head_third, head_carpet, optimizer)
-
 
 if __name__ == "__main__":
     init_logging()
