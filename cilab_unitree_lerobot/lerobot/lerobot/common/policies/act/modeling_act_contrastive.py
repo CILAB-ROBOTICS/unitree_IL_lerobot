@@ -19,9 +19,11 @@ As per Learning Fine-Grained Bimanual Manipulation with Low-Cost Hardware (https
 The majority of changes here involve removing unused code, unifying naming, and adding helpful comments.
 """
 
+import logging
 import math
 from collections import deque
 from itertools import chain
+from pathlib import Path
 from typing import Callable
 
 import einops
@@ -456,11 +458,74 @@ class ACT(nn.Module):
 
         self._reset_parameters()
 
+        # Optionally swap the encoder with weights from a separately trained encoder
+        # (e.g., a head-camera encoder trained on tactile carpet data).
+        if getattr(self.config, "pretrained_encoder_checkpoint", None):
+            self.replace_encoder_from_checkpoint(
+                self.config.pretrained_encoder_checkpoint,
+                getattr(self.config, "pretrained_encoder_key", None),
+            )
+
     def _reset_parameters(self):
         """Xavier-uniform initialization of the transformer parameters as in the original code."""
         for p in chain(self.encoder.parameters(), self.decoder.parameters()):
             if p.dim() > 1:
                 nn.init.xavier_uniform_(p)
+
+    def replace_encoder_from_checkpoint(self, checkpoint_path: str | Path, encoder_prefix: str | None = None):
+        """Load an external encoder's weights and overwrite the current ACT encoder.
+
+        Args:
+            checkpoint_path: Path to a checkpoint that contains the pretrained encoder weights.
+            encoder_prefix: Optional prefix indicating where the encoder weights live inside the
+                checkpoint's state dict (e.g., "model.encoder"). If not provided, common prefixes
+                are tried in order.
+        """
+
+        checkpoint_file = Path(checkpoint_path)
+        if not checkpoint_file.exists():
+            raise FileNotFoundError(f"Encoder checkpoint not found: {checkpoint_file}")
+
+        checkpoint = torch.load(checkpoint_file, map_location="cpu")
+        if "state_dict" in checkpoint:
+            state_dict = checkpoint["state_dict"]
+        elif "model" in checkpoint:
+            state_dict = checkpoint["model"]
+        else:
+            state_dict = checkpoint
+
+        prefixes = []
+        if encoder_prefix:
+            prefixes.append(encoder_prefix.rstrip("."))
+        prefixes.extend(["encoder", "model.encoder"])
+
+        encoder_state_dict = None
+        selected_prefix = None
+        for prefix in prefixes:
+            full_prefix = prefix if prefix.endswith(".") else f"{prefix}."
+            subset = {k[len(full_prefix) :]: v for k, v in state_dict.items() if k.startswith(full_prefix)}
+            if subset:
+                encoder_state_dict = subset
+                selected_prefix = prefix
+                break
+
+        if encoder_state_dict is None:
+            raise ValueError(
+                "Could not find encoder weights in checkpoint. Tried prefixes: "
+                + ", ".join(prefixes)
+            )
+
+        incompatible = self.encoder.load_state_dict(encoder_state_dict, strict=False)
+        if incompatible.missing_keys or incompatible.unexpected_keys:
+            logging.warning(
+                "Loaded encoder from '%s' (prefix='%s') with missing keys %s and unexpected keys %s.",
+                checkpoint_file,
+                selected_prefix,
+                incompatible.missing_keys,
+                incompatible.unexpected_keys,
+            )
+        else:
+            logging.info("Successfully replaced ACT encoder using checkpoint '%s'.", checkpoint_file)
 
     def forward(self, batch: dict[str, Tensor]) -> tuple[Tensor, tuple[Tensor, Tensor] | tuple[None, None], Tensor | None]:
         """A forward pass through the Action Chunking Transformer (with optional VAE encoder).
