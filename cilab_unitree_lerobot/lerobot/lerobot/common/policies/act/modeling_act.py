@@ -128,6 +128,29 @@ class ACTPolicy(PreTrainedPolicy):
             batch = dict(batch)  # shallow copy so that adding a key doesn't modify the original
             batch["observation.images"] = [batch[key] for key in self.config.image_features]
 
+        if "observation.object_condition" not in batch and "task_index" in batch:
+            # Convert task_index to one-hot vector
+            # Mapping: 0 -> [0, 1], 1 -> [1, 0]
+            task_index = batch["task_index"]
+            batch_size = task_index.shape[0]
+            device = task_index.device
+            
+            # Initialize with zeros
+            condition = torch.zeros((batch_size, 2), device=device, dtype=torch.float32)
+            
+            # Set values based on index
+            # task_index 0 -> [0, 1] (index 1 is 1)
+            # task_index 1 -> [1, 0] (index 0 is 1)
+            
+            # Create masks
+            mask_0 = (task_index == 0)
+            mask_1 = (task_index == 1)
+            
+            condition[mask_0, 1] = 1.0
+            condition[mask_1, 0] = 1.0
+            
+            batch["observation.object_condition"] = condition
+
         # If we are doing temporal ensembling, do online updates where we keep track of the number of actions
         # we are ensembling over.
         if self.config.temporal_ensemble_coeff is not None:
@@ -155,6 +178,33 @@ class ACTPolicy(PreTrainedPolicy):
         if self.config.image_features:
             batch = dict(batch)  # shallow copy so that adding a key doesn't modify the original
             batch["observation.images"] = [batch[key] for key in self.config.image_features]
+
+        if "observation.object_condition" not in batch and "task_index" in batch:
+            # Convert task_index to one-hot vector
+            # Mapping: 0 -> [0, 1], 1 -> [1, 0]
+            task_index = batch["task_index"]
+            batch_size = task_index.shape[0]
+            device = task_index.device
+            
+            # Initialize with zeros
+            condition = torch.zeros((batch_size, 2), device=device, dtype=torch.float32)
+            
+            # Set values based on index
+            # task_index 0 -> [0, 1] (index 1 is 1)
+            # task_index 1 -> [1, 0] (index 0 is 1)
+            
+            # Create masks
+            # Note: task_index might be (B,) or (B, 1)
+            if task_index.dim() > 1:
+                task_index = task_index.squeeze(-1)
+                
+            mask_0 = (task_index == 0)
+            mask_1 = (task_index == 1)
+            
+            condition[mask_0, 1] = 1.0
+            condition[mask_1, 0] = 1.0
+            
+            batch["observation.object_condition"] = condition
 
         batch = self.normalize_targets(batch)
         actions_hat, (mu_hat, log_sigma_x2_hat) = self.model(batch)
@@ -378,6 +428,10 @@ class ACT(nn.Module):
             self.encoder_env_state_input_proj = nn.Linear(
                 self.config.env_state_feature.shape[0], config.dim_model
             )
+        if self.config.object_condition_feature:
+            self.encoder_object_condition_input_proj = nn.Linear(
+                self.config.object_condition_feature, config.dim_model
+            )
         self.encoder_latent_input_proj = nn.Linear(config.latent_dim, config.dim_model)
         if self.config.image_features:
             self.encoder_img_feat_input_proj = nn.Conv2d(
@@ -388,6 +442,8 @@ class ACT(nn.Module):
         if self.config.robot_state_feature:
             n_1d_tokens += 1
         if self.config.env_state_feature:
+            n_1d_tokens += 1
+        if self.config.object_condition_feature:
             n_1d_tokens += 1
         # Note: tactile is processed as 2D spatial tokens, not 1D
         self.encoder_1d_feature_pos_embed = nn.Embedding(n_1d_tokens, config.dim_model)
@@ -501,6 +557,25 @@ class ACT(nn.Module):
             tokens_1d.append(
                 self.encoder_env_state_input_proj(batch["observation.environment_state"])
             )
+        if self.config.object_condition_feature:
+            if "observation.object_condition" in batch:
+                tokens_1d.append(
+                    self.encoder_object_condition_input_proj(batch["observation.object_condition"])
+                )
+            else:
+                # If configured but not present, use zeros
+                # This handles cases where we might want to test "no condition" vs "condition"
+                # or if the dataset doesn't provide it but the model expects it.
+                # However, for the specific request of "with/without", we might want to control this explicitly.
+                # For now, let's assume if it's missing, we pass zeros.
+                batch_size = batch["observation.state"].shape[0] if "observation.state" in batch else batch["observation.images"][0].shape[0]
+                device = batch["observation.state"].device if "observation.state" in batch else batch["observation.images"][0].device
+                zeros = torch.zeros(
+                    (batch_size, self.config.object_condition_feature),
+                    device=device,
+                    dtype=torch.float32
+                )
+                tokens_1d.append(self.encoder_object_condition_input_proj(zeros))
 
         tokens_1d = torch.stack(tokens_1d, dim=0)  # (N1D, B, D)
         pos_embed_1d = self.encoder_1d_feature_pos_embed.weight.unsqueeze(1)  # (N1D, 1, D)
