@@ -37,6 +37,7 @@ from lerobot.common.policies.act.configuration_act import ACTConfig
 from lerobot.common.policies.normalize import Normalize, Unnormalize
 from lerobot.common.policies.pretrained import PreTrainedPolicy
 
+import logging
 
 class ACTPolicy(PreTrainedPolicy):
     """
@@ -576,6 +577,8 @@ class ACT(nn.Module):
                     dtype=torch.float32
                 )
                 tokens_1d.append(self.encoder_object_condition_input_proj(zeros))
+        else:
+            logging.warning("object_condition_feature is not configured")
 
         tokens_1d = torch.stack(tokens_1d, dim=0)  # (N1D, B, D)
         pos_embed_1d = self.encoder_1d_feature_pos_embed.weight.unsqueeze(1)  # (N1D, 1, D)
