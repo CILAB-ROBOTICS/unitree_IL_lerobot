@@ -601,8 +601,7 @@ class ACT(nn.Module):
                     tac_pos_embed = einops.rearrange(tac_pos_embed, "b c h w -> (h w) b c")
                     all_2d_features.append(tac_features)
                     all_2d_pos_embeds.append(tac_pos_embed)
-                    
-                elif "tactile" not in img_key and hasattr(self, "backbone"):
+                elif "tactile" not in img_key and hasattr(self, "backbone") and "third" in img_key:
                     # Process camera as 2D spatial tokens (original path)
                     cam_features = self.backbone(img)["feature_map"]
                     cam_pos_embed = self.encoder_cam_feat_pos_embed(cam_features).to(dtype=cam_features.dtype)
