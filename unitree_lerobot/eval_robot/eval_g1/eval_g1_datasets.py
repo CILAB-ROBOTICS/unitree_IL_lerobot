@@ -83,7 +83,8 @@ class CheckpointEvaluator:
         self.results = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
         # Generate single timestamp with process ID for concurrent execution
         import os
-        self.timestamp = datetime.now().strftime("%Y%m%d_%H%M%S") + f"_pid{os.getpid()}"
+        # Use timestamp without process ID for cleaner output paths
+        self.timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         
         # Validate that datasets and repo_ids have same length
         if len(config.datasets) != len(config.repo_ids):
@@ -412,7 +413,7 @@ class CheckpointEvaluator:
         # Use the shared timestamp for all files
         
         # Save statistics
-        stats_filename = f'{self.timestamp}_checkpoint_evaluation_stats.json'
+        stats_filename = f'checkpoint_evaluation_stats.json'
         stats_path = os.path.join(self.unique_output_dir, stats_filename)
         with open(stats_path, 'w') as f:
             json.dump(stats_dict, f, indent=2)
@@ -426,7 +427,7 @@ class CheckpointEvaluator:
                 for checkpoint_step in self.results[arch][dataset]:
                     raw_results[arch][dataset][checkpoint_step] = self.results[arch][dataset][checkpoint_step]
         
-        raw_filename = f'{self.timestamp}_raw_checkpoint_results.json'
+        raw_filename = f'raw_checkpoint_results.json'
         raw_path = os.path.join(self.unique_output_dir, raw_filename)
         with open(raw_path, 'w') as f:
             json.dump(raw_results, f, indent=2)

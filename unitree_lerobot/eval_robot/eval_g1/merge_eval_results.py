@@ -5,7 +5,7 @@ Combines results from different runs and creates comparison plots across archite
 Usage:
     Basic usage (3-part format):
     python unitree_lerobot/eval_robot/eval_g1/merge_eval_results.py \
-        --task towel_weak_train \
+        --tasks towel_weak_train \
         --configs \
             "path1.json:act:ACT-Normal" \
             "path2.json:act:ACT-NoTactile" \
@@ -13,11 +13,16 @@ Usage:
 
     Extended format with custom colors, linestyles, and markers (6-part format):
     python unitree_lerobot/eval_robot/eval_g1/merge_eval_results.py \
-        --task towel_weak_train towel_strong_train \
+        --tasks towel_weak_train towel_strong_train \
         --configs \
             "file1.json:act:ACT-Train:#007737:-:o" \
             "file2.json:act:ACT-Test:#DD5E1D:--:s" \
         --output_dir merged_results
+
+Arguments:
+    --tasks: Task names to analyze (required, e.g., towel_weak_train towel_strong_train)
+    --configs: Model configurations in format "file:arch:label" or "file:arch:label:color:linestyle:marker" (required)
+    --output_dir: Output directory for merged results (default: merged_results)
 
 Features:
     - Task-specific analysis with custom architecture labeling
@@ -28,6 +33,7 @@ Features:
     - Handles different checkpoint steps automatically
     - Generates publication-ready plots with error bars
     - Custom styling: colors (hex/name), linestyles (-, --, -., :), markers (o, s, ^, etc.)
+    - Supports glob patterns in file paths (e.g., "run_*/checkpoint_evaluation_stats.json")
 """
 
 import json
