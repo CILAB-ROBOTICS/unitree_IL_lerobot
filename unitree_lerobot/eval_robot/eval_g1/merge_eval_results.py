@@ -3,7 +3,7 @@ Merge and visualize evaluation results from multiple checkpoint evaluation files
 Combines results from different runs and creates comparison plots across architectures and tasks
 
 Usage:
-    Basic usage:
+    Basic usage (3-part format):
     python unitree_lerobot/eval_robot/eval_g1/merge_eval_results.py \
         --task towel_weak_train \
         --configs \
@@ -11,20 +11,23 @@ Usage:
             "path2.json:act:ACT-NoTactile" \
             "path1.json:mlp:MLP-Baseline"
 
-    Multiple tasks:
+    Extended format with custom colors, linestyles, and markers (6-part format):
     python unitree_lerobot/eval_robot/eval_g1/merge_eval_results.py \
         --task towel_weak_train towel_strong_train \
         --configs \
-            "file1.json:act:ACT-Normal" \
-            "file2.json:act:ACT-Modified" \
+            "file1.json:act:ACT-Train:#007737:-:o" \
+            "file2.json:act:ACT-Test:#DD5E1D:--:s" \
         --output_dir merged_results
 
 Features:
     - Task-specific analysis with custom architecture labeling
-    - Flexible configuration: file:architecture:custom_label format
+    - Flexible configuration formats:
+        * Basic: file:architecture:label
+        * Extended: file:architecture:label:color:linestyle:marker
     - Creates comparison plots for MSE, L1, and Huber losses
     - Handles different checkpoint steps automatically
     - Generates publication-ready plots with error bars
+    - Custom styling: colors (hex/name), linestyles (-, --, -., :), markers (o, s, ^, etc.)
 """
 
 import json
@@ -45,6 +48,9 @@ class ModelConfig:
     file_path: str
     architecture: str  # Original architecture name in JSON
     custom_label: str  # Custom label for plotting
+    color: Optional[str] = None  # Custom color (hex or name)
+    linestyle: Optional[str] = None  # Line style ('-', '--', '-.', ':')
+    marker: Optional[str] = None  # Marker style ('o', 's', '^', etc.)
 
 
 class EvalResultsMerger:
@@ -79,39 +85,80 @@ class EvalResultsMerger:
         print(f"Found checkpoint steps: {self.checkpoint_steps}")
     
     def _parse_configs(self, configs: List[str]) -> List[ModelConfig]:
-        """Parse configuration strings in format 'file:arch:label'"""
+        """Parse configuration strings in format 'file:arch:label' or 'file:arch:label:color:linestyle:marker'"""
         model_configs = []
         for config_str in configs:
             try:
                 parts = config_str.split(':')
-                if len(parts) != 3:
-                    raise ValueError(f"Config must be in format 'file:arch:label', got: {config_str}")
-                
-                file_path, architecture, custom_label = parts
-                model_configs.append(ModelConfig(
-                    file_path=file_path.strip(),
-                    architecture=architecture.strip(),
-                    custom_label=custom_label.strip()
-                ))
+                if len(parts) == 3:
+                    # Basic format: file:arch:label
+                    file_path, architecture, custom_label = parts
+                    model_configs.append(ModelConfig(
+                        file_path=file_path.strip(),
+                        architecture=architecture.strip(),
+                        custom_label=custom_label.strip()
+                    ))
+                elif len(parts) == 6:
+                    # Extended format: file:arch:label:color:linestyle:marker
+                    file_path, architecture, custom_label, color, linestyle, marker = parts
+                    model_configs.append(ModelConfig(
+                        file_path=file_path.strip(),
+                        architecture=architecture.strip(),
+                        custom_label=custom_label.strip(),
+                        color=color.strip() if color.strip() else None,
+                        linestyle=linestyle.strip() if linestyle.strip() else None,
+                        marker=marker.strip() if marker.strip() else None
+                    ))
+                else:
+                    raise ValueError(f"Config must be in format 'file:arch:label' or 'file:arch:label:color:linestyle:marker', got {len(parts)} parts")
             except Exception as e:
                 raise ValueError(f"Invalid config format '{config_str}': {e}")
         
         return model_configs
     
+    def _resolve_latest_file(self, pattern: str) -> Optional[str]:
+        """Resolve a file path pattern (supports glob like run_*/file.json) to the latest file by mtime.
+
+        If the pattern contains wildcards, expand and pick the most recent. If no wildcard, return as-is.
+        """
+        # Detect simple glob characters
+        if any(ch in pattern for ch in ['*', '?', '[']):
+            matches = sorted(Path().glob(pattern), key=lambda p: p.stat().st_mtime, reverse=True)
+            if not matches:
+                print(f"✗ No files matched pattern: {pattern}")
+                return None
+            chosen = str(matches[0])
+            # Log a short summary
+            print(f"Pattern '{pattern}' matched {len(matches)} file(s). Using latest: {chosen}")
+            return chosen
+        # No wildcard, return as-is
+        return pattern
+
     def _load_all_data(self) -> Dict[str, Dict[str, Any]]:
-        """Load data from all input files, indexed by file path"""
+        """Load data from all input files, indexed by resolved file path (after wildcard expansion)."""
         data = {}
+        original_to_resolved: Dict[str, str] = {}
         unique_files = set(config.file_path for config in self.model_configs)
-        
-        for file_path in unique_files:
+
+        for file_pattern in unique_files:
+            resolved = self._resolve_latest_file(file_pattern)
+            if resolved is None:
+                continue
+            original_to_resolved[file_pattern] = resolved
             try:
-                with open(file_path, 'r') as f:
+                with open(resolved, 'r') as f:
                     file_data = json.load(f)
-                    data[file_path] = file_data
-                    print(f"✓ Loaded {file_path}")
+                    data[resolved] = file_data
+                    print(f"✓ Loaded {resolved}")
             except Exception as e:
-                print(f"✗ Failed to load {file_path}: {e}")
+                print(f"✗ Failed to load {resolved}: {e}")
                 raise
+
+        # Update model configs to point to resolved paths so downstream lookups work
+        for cfg in self.model_configs:
+            if cfg.file_path in original_to_resolved:
+                cfg.file_path = original_to_resolved[cfg.file_path]
+
         return data
     
     def _extract_checkpoint_steps(self) -> List[str]:
@@ -145,9 +192,10 @@ class EvalResultsMerger:
                 # Convert checkpoint steps to integers for plotting
                 x_steps = [int(step) for step in self.checkpoint_steps]
                 
-                # Colors and markers for different models
-                colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b', '#e377c2', '#7f7f7f']
-                markers = ['o', 's', '^', 'v', 'D', 'p', 'h', '*']
+                # Default colors, linestyles and markers for different models
+                default_colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b', '#e377c2', '#7f7f7f']
+                default_markers = ['o', 's', '^', 'v', 'D', 'p', 'h', '*']
+                default_linestyle = '-'
                 
                 plot_idx = 0
                 
@@ -186,15 +234,17 @@ class EvalResultsMerger:
                         print(f"  Warning: No valid data for {config.custom_label} on {task}")
                         continue
                     
-                    # Plot with unique style
-                    color = colors[plot_idx % len(colors)]
-                    marker = markers[plot_idx % len(markers)]
+                    # Use custom or default styles
+                    color = config.color if config.color else default_colors[plot_idx % len(default_colors)]
+                    marker = config.marker if config.marker else default_markers[plot_idx % len(default_markers)]
+                    linestyle = config.linestyle if config.linestyle else default_linestyle
                     
                     # Main line plot
                     ax.plot(x_steps, means, 
                            label=config.custom_label, 
                            color=color, 
-                           marker=marker, 
+                           marker=marker,
+                           linestyle=linestyle,
                            linewidth=3, 
                            markersize=8,
                            markerfacecolor='white',
@@ -252,8 +302,9 @@ class EvalResultsMerger:
             if len(self.tasks) == 1:
                 axes = [axes]
             
-            colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b']
-            markers = ['o', 's', '^', 'v', 'D', 'p']
+            default_colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b']
+            default_markers = ['o', 's', '^', 'v', 'D', 'p']
+            default_linestyle = '-'
             
             for task_idx, task in enumerate(self.tasks):
                 ax = axes[task_idx]
@@ -288,13 +339,16 @@ class EvalResultsMerger:
                     if np.all(np.isnan(means)):
                         continue
                     
-                    color = colors[plot_idx % len(colors)]
-                    marker = markers[plot_idx % len(markers)]
+                    # Use custom or default styles
+                    color = config.color if config.color else default_colors[plot_idx % len(default_colors)]
+                    marker = config.marker if config.marker else default_markers[plot_idx % len(default_markers)]
+                    linestyle = config.linestyle if config.linestyle else default_linestyle
                     
                     ax.plot(x_steps, means, 
                            label=config.custom_label, 
                            color=color, 
-                           marker=marker, 
+                           marker=marker,
+                           linestyle=linestyle,
                            linewidth=2.5, 
                            markersize=6,
                            markerfacecolor='white',
@@ -412,12 +466,27 @@ class EvalResultsMerger:
 
 def parse_args():
     """Parse command line arguments"""
-    parser = argparse.ArgumentParser(description='Merge and visualize evaluation results with custom model labeling')
+    parser = argparse.ArgumentParser(
+        description='Merge and visualize evaluation results with custom model labeling',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Format options for --configs:
+  Basic (3-part):    file:architecture:label
+  Extended (6-part): file:architecture:label:color:linestyle:marker
+
+Examples:
+  Basic:    "results.json:act:ACT-Normal"
+  Extended: "results.json:act:ACT-Train:#007737:-:o"
+  
+Linestyles: - (solid), -- (dashed), -. (dashdot), : (dotted)
+Markers: o (circle), s (square), ^ (triangle), v (triangle_down), D (diamond), etc.
+"""
+    )
     
     parser.add_argument('--tasks', nargs='+', required=True,
                        help='Task names to analyze (e.g., towel_weak_train towel_strong_train)')
     parser.add_argument('--configs', nargs='+', required=True,
-                       help='Model configurations in format "file:architecture:label" (e.g., "file1.json:act:ACT-Normal")')
+                       help='Model configurations in format "file:arch:label" or "file:arch:label:color:linestyle:marker"')
     parser.add_argument('--output_dir', default='merged_results',
                        help='Output directory for merged results (default: merged_results)')
     
