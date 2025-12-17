@@ -13,22 +13,33 @@ Usage:
         --architectures mlp act \
         --checkpoint_steps 020000 040000 060000 080000 100000
 
-    With custom dataset names:
+    With custom dataset names (matching directory names):
     python unitree_lerobot/eval_robot/eval_g1/eval_g1_datasets.py \
         --repo_ids user/towel_strong_train user/towel_weak_train \
-        --dataset_names towel_strong towel_weak \
+        --dataset_names towel_strong_train towel_weak_train \
         --models_base_path outputs/models \
         --output_dir outputs/checkpoint_evaluation_results \
         --device cuda
 
 Arguments:
     --repo_ids: List of HuggingFace repo IDs to evaluate against (required)
-    --dataset_names: Custom names for datasets (optional, defaults to repo names)
+    --dataset_names: Custom names for datasets (optional, defaults to repo names).
+                    Order must match repo_ids (i.e., dataset_names[i] corresponds to repo_ids[i])
     --architectures: Model architectures to compare (default: mlp act)
     --checkpoint_steps: Training steps to evaluate (default: 020000 040000 060000 080000 100000)
     --models_base_path: Base path for model checkpoints (default: outputs/models)
     --output_dir: Output directory for results (default: outputs/checkpoint_evaluation_results)
     --device: Device to use for evaluation (default: cuda)
+
+한글 설명:
+    --repo_ids: 평가에 사용할 HuggingFace repo ID 리스트 (필수)
+    --dataset_names: 각 repo에 대응하는 데이터셋 이름 (선택, 기본값은 repo 이름의 마지막 부분).
+                    repo_ids와 순서를 반드시 맞춰야 하며, dataset_names[i]는 repo_ids[i]에 대응함
+    --architectures: 비교할 모델 아키텍처 리스트 (기본값: mlp act)
+    --checkpoint_steps: 평가할 학습 step 리스트 (기본값: 020000 040000 060000 080000 100000)
+    --models_base_path: 모델 체크포인트가 저장된 기본 경로 (기본값: outputs/models)
+    --output_dir: 결과를 저장할 출력 디렉토리 (기본값: outputs/checkpoint_evaluation_results)
+    --device: 평가에 사용할 디바이스 (기본값: cuda)
 
 Output:
     - Statistics JSON file with mean/std for each architecture-dataset-step combination
