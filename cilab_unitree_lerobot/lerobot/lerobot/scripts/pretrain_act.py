@@ -16,7 +16,7 @@ from termcolor import colored
 
 from lerobot.common.datasets.factory import make_dataset
 from lerobot.common.datasets.utils import cycle
-from lerobot.common.policies.factory import make_policy
+from cilab_unitree_lerobot.lerobot.lerobot.common.policies.factory import make_policy
 from lerobot.common.utils.random_utils import set_seed
 from lerobot.common.utils.utils import (
     format_big_number,
@@ -65,19 +65,6 @@ def extract_embeddings(policy, batch, device):
         tokens_1d = torch.stack(tokens_1d, dim=0)  # (N1D, B, D)
         pos_embed_1d = model.encoder_1d_feature_pos_embed.weight.unsqueeze(1)  # (N1D, 1, D)
 
-        tactile_backbone = nn.Sequential(
-            nn.Conv2d(3, 32, kernel_size=3, padding=1),
-            nn.BatchNorm2d(32),
-            nn.ReLU(),
-            nn.Conv2d(32, 64, kernel_size=3, padding=1, stride=2),
-            nn.BatchNorm2d(64),
-            nn.ReLU(),
-            nn.Conv2d(64, 128, kernel_size=3, padding=1),
-            nn.BatchNorm2d(128),
-            nn.ReLU(),
-            nn.Conv2d(128, policy.config.dim_model, kernel_size=1),
-        ).to(device)
-
         tokens_2d = None
         pos_embed_2d = None
         carpet_embeddings = None
@@ -90,8 +77,8 @@ def extract_embeddings(policy, batch, device):
             third_features = []
             
             for img_key, img in zip(model.config.image_features, batch["observation.images"]):
-                if "tactile" in img_key and tactile_backbone is not None:
-                    tac_features = tactile_backbone(img)
+                if "tactile" in img_key and modeltactile_backbone is not None:
+                    tac_features = model.tactile_backbone(img)
                     tac_pos_embed = model.encoder_cam_feat_pos_embed(tac_features).to(dtype=tac_features.dtype)
 
                     tac_features = einops.rearrange(tac_features, "b c h w -> (h w) b c")
