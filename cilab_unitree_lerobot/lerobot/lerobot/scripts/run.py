@@ -34,12 +34,41 @@ from lerobot.common.utils.utils import (
 )
 from lerobot.common.utils.wandb_utils import WandBLogger
 from lerobot.configs import parser
-from lerobot.configs.train import TrainPipelineConfig
+from cilab_unitree_lerobot.lerobot.lerobot.configs.train import TrainPipelineConfig
 from lerobot.scripts.eval import eval_policy
 
 from unitree_lerobot.lerobot.lerobot.scripts.train import update_policy
 
 from cilab_unitree_lerobot.lerobot.lerobot.scripts.configs.preprocessing import train_test_split
+
+
+@torch.no_grad()
+def evaluate_on_val(
+    policy,
+    val_dataloader,
+    device,
+    use_amp,
+):
+    policy.eval()
+    val_loss_meter = AverageMeter("val_loss", ":.3f")
+
+    for batch in val_dataloader:
+        for key in batch:
+            if isinstance(batch[key], torch.Tensor):
+                batch[key] = batch[key].to(device, non_blocking=True)
+
+        with torch.autocast(device_type=device.type) if use_amp else nullcontext():
+            output = policy(batch)
+            if isinstance(output, dict):
+                loss = output["loss"]
+            elif isinstance(output, tuple):
+                loss = output[0]
+            else:
+                loss = output
+        val_loss_meter.update(loss.item(), n=batch[list(batch.keys())[0]].shape[0])
+
+    policy.train()
+    return val_loss_meter.avg
 
 
 @parser.wrap()
@@ -65,9 +94,8 @@ def train(cfg: TrainPipelineConfig):
     dataset = make_dataset(cfg)
 
     # Split dataset by episodes
-    val_ratio = 0.2
-    train_dataset, val_dataset, train_eps, val_eps = train_test_split(dataset, val_ratio)
-    logging.info(f"Dataset split: Train={len(train_dataset)}, Val={len(val_dataset)}")
+    val_ratio = 0.3
+    train_eps, val_eps = train_test_split(dataset, val_ratio)
 
     # Create environment used for evaluating checkpoints during training on simulation data.
     # On real-world data, no need to create an environment as evaluations are done outside train.py,
@@ -88,6 +116,7 @@ def train(cfg: TrainPipelineConfig):
     grad_scaler = GradScaler(device.type, enabled=cfg.policy.use_amp)
 
     step = 0  # number of policy updates (forward + backward + optim)
+    eval_step = 0
 
     if cfg.resume:
         step, optimizer, lr_scheduler = load_training_state(cfg.checkpoint_path, optimizer, lr_scheduler)
@@ -106,24 +135,44 @@ def train(cfg: TrainPipelineConfig):
 
     # create dataloader for offline training
     shuffle = False
-    sampler = EpisodeAwareSampler(
+    train_sampler = EpisodeAwareSampler(
         dataset.episode_data_index,
         episode_indices_to_use=train_eps,
         drop_n_last_frames=1,
-        shuffle=shuffle,
+        shuffle=False,
     )
-    logging.info(f"Sampler length (num frames): {len(sampler)}")
 
-    dataloader = torch.utils.data.DataLoader(
-        train_dataset,
+    train_dataloader = torch.utils.data.DataLoader(
+        dataset,
         num_workers=cfg.num_workers,
         batch_size=cfg.batch_size,
-        shuffle=shuffle,
-        sampler=sampler,
+        shuffle=False,
+        sampler=train_sampler,
         pin_memory=device.type != "cpu",
         drop_last=False,
     )
-    dl_iter = cycle(dataloader)
+    dl_iter = cycle(train_dataloader)
+
+    # create dataloader for offline validation
+    val_sampler = EpisodeAwareSampler(
+        dataset.episode_data_index,
+        episode_indices_to_use=val_eps,
+        drop_n_last_frames=1,
+        shuffle=False,
+    )
+
+    val_dataloader = torch.utils.data.DataLoader(
+        dataset,
+        num_workers=cfg.num_workers,
+        batch_size=cfg.batch_size,
+        shuffle=False,
+        sampler=val_sampler,
+        pin_memory=device.type != "cpu",
+        drop_last=False,
+    )
+
+    logging.info(f"Sampler length (num frames): {len(train_sampler)}")
+    logging.info(f"Sampler length (num frames): {len(val_sampler)}")
 
     policy.train()
 
@@ -133,6 +182,10 @@ def train(cfg: TrainPipelineConfig):
         "lr": AverageMeter("lr", ":0.1e"),
         "update_s": AverageMeter("updt_s", ":.3f"),
         "dataloading_s": AverageMeter("data_s", ":.3f"),
+    }
+
+    val_metrics = {
+        "val_loss": AverageMeter("val_loss", ":.3f"),
     }
 
     train_tracker = MetricsTracker(
@@ -163,10 +216,23 @@ def train(cfg: TrainPipelineConfig):
         # Note: eval and checkpoint happens *after* the `step`th training update has completed, so we
         # increment `step` here.
         step += 1
+        eval_step += 1
+
         train_tracker.step()
         is_log_step = cfg.log_freq > 0 and step % cfg.log_freq == 0
         is_saving_step = step % cfg.save_freq == 0 or step == cfg.steps
-        is_eval_step = cfg.eval_freq > 0 and step % cfg.eval_freq == 0
+        is_eval_step = cfg.eval_freq > 0 and eval_step % cfg.eval_freq == 0
+
+        if is_eval_step:
+            val_loss = evaluate_on_val(
+                policy,
+                val_dataloader,
+                device,
+                use_amp=cfg.policy.use_amp,
+            )
+            logging.info(f"[valid] step={step} val_loss={val_loss:.4f}")
+            if wandb_logger:
+                wandb_logger.log_dict({"loss": val_loss}, step=eval_step, mode="eval")
 
         if is_log_step:
             logging.info(train_tracker)
@@ -184,7 +250,7 @@ def train(cfg: TrainPipelineConfig):
             update_last_checkpoint(checkpoint_dir)
             if wandb_logger:
                 wandb_logger.log_policy(checkpoint_dir)
-
+        '''
         if cfg.env and is_eval_step:
             step_id = get_step_identifier(step, cfg.steps)
             logging.info(f"Eval policy at step {step}")
@@ -217,10 +283,10 @@ def train(cfg: TrainPipelineConfig):
                 wandb_log_dict = {**eval_tracker.to_dict(), **eval_info}
                 wandb_logger.log_dict(wandb_log_dict, step, mode="eval")
                 wandb_logger.log_video(eval_info["video_paths"][0], step, mode="eval")
-
-    if eval_env:
-        eval_env.close()
-    logging.info("End of training")
+        '''
+    #if eval_env:
+    #    eval_env.close()
+    #logging.info("End of training")
 
 
 if __name__ == "__main__":

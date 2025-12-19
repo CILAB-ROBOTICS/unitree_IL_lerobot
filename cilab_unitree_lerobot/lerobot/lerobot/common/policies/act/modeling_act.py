@@ -34,7 +34,7 @@ from torchvision.models._utils import IntermediateLayerGetter
 from torchvision.ops.misc import FrozenBatchNorm2d
 
 from lerobot.common.policies.act.configuration_act import ACTConfig
-from lerobot.common.policies.normalize import Normalize, Unnormalize
+from cilab_unitree_lerobot.lerobot.lerobot.common.policies.normalize import Normalize, Unnormalize
 from lerobot.common.policies.pretrained import PreTrainedPolicy
 
 
