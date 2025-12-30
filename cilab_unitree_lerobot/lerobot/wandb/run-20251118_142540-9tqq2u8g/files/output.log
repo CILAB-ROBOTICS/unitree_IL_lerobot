@@ -1,0 +1,86 @@
+Resolving data files: 100%|█████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 51/51 [00:00<00:00, 133693.44it/s]
+Resolving data files: 100%|██████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 41/41 [00:00<00:00, 62807.33it/s]
+Resolving data files: 100%|██████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 20/20 [00:00<00:00, 77243.17it/s]
+  0%|                                                                                                                                                               | 0/100 [00:00<?, ?it/s]WARNING 2025-11-18 14:46:02 /pretrain.py:44 Requested top-5 but batch size is 1.
+WARNING 2025-11-18 14:46:02 /pretrain.py:44 Requested top-10 but batch size is 1.
+  1%|█▍                                                                                                                                                | 1/100 [29:11<48:09:24, 1751.15s/it]
+Traceback (most recent call last):
+  File "/workspace/cilab_unitree_lerobot/lerobot/lerobot/scripts/pretrain.py", line 624, in <module>
+    run_clip_pretraining(args)
+  File "/workspace/cilab_unitree_lerobot/lerobot/lerobot/scripts/pretrain.py", line 587, in run_clip_pretraining
+    clip_pretraining(train_dataset, test_dataset, train_features, save_dir=save_run_dir, args=args)
+  File "/workspace/cilab_unitree_lerobot/lerobot/lerobot/scripts/pretrain.py", line 228, in clip_pretraining
+    for batch_idx, batch in enumerate(train_loader):
+  File "/usr/local/lib/python3.10/dist-packages/torch/utils/data/dataloader.py", line 732, in __next__
+    data = self._next_data()
+  File "/usr/local/lib/python3.10/dist-packages/torch/utils/data/dataloader.py", line 788, in _next_data
+    data = self._dataset_fetcher.fetch(index)  # may raise StopIteration
+  File "/usr/local/lib/python3.10/dist-packages/torch/utils/data/_utils/fetch.py", line 52, in fetch
+    data = [self.dataset[idx] for idx in possibly_batched_index]
+  File "/usr/local/lib/python3.10/dist-packages/torch/utils/data/_utils/fetch.py", line 52, in <listcomp>
+    data = [self.dataset[idx] for idx in possibly_batched_index]
+  File "/usr/local/lib/python3.10/dist-packages/torch/utils/data/dataset.py", line 346, in __getitem__
+    return self.datasets[dataset_idx][sample_idx]
+  File "/workspace/unitree_lerobot/lerobot/lerobot/common/datasets/lerobot_dataset.py", line 725, in __getitem__
+    item = self.hf_dataset[idx]
+  File "/usr/local/lib/python3.10/dist-packages/datasets/arrow_dataset.py", line 2782, in __getitem__
+    return self._getitem(key)
+  File "/usr/local/lib/python3.10/dist-packages/datasets/arrow_dataset.py", line 2767, in _getitem
+    formatted_output = format_table(
+  File "/usr/local/lib/python3.10/dist-packages/datasets/formatting/formatting.py", line 658, in format_table
+    return formatter(pa_table, query_type=query_type)
+  File "/usr/local/lib/python3.10/dist-packages/datasets/formatting/formatting.py", line 411, in __call__
+    return self.format_row(pa_table)
+  File "/usr/local/lib/python3.10/dist-packages/datasets/formatting/formatting.py", line 511, in format_row
+    formatted_batch = self.format_batch(pa_table)
+  File "/usr/local/lib/python3.10/dist-packages/datasets/formatting/formatting.py", line 541, in format_batch
+    return self.transform(batch)
+  File "/workspace/unitree_lerobot/lerobot/lerobot/common/datasets/utils.py", line 268, in hf_transform_to_torch
+    items_dict[key] = [to_tensor(img) for img in items_dict[key]]
+  File "/workspace/unitree_lerobot/lerobot/lerobot/common/datasets/utils.py", line 268, in <listcomp>
+    items_dict[key] = [to_tensor(img) for img in items_dict[key]]
+  File "/usr/local/lib/python3.10/dist-packages/torchvision/transforms/transforms.py", line 137, in __call__
+    return F.to_tensor(pic)
+  File "/usr/local/lib/python3.10/dist-packages/torchvision/transforms/functional.py", line 176, in to_tensor
+    return img.to(dtype=default_float_dtype).div(255)
+KeyboardInterrupt
+Traceback (most recent call last):
+  File "/workspace/cilab_unitree_lerobot/lerobot/lerobot/scripts/pretrain.py", line 624, in <module>
+    run_clip_pretraining(args)
+  File "/workspace/cilab_unitree_lerobot/lerobot/lerobot/scripts/pretrain.py", line 587, in run_clip_pretraining
+    clip_pretraining(train_dataset, test_dataset, train_features, save_dir=save_run_dir, args=args)
+  File "/workspace/cilab_unitree_lerobot/lerobot/lerobot/scripts/pretrain.py", line 228, in clip_pretraining
+    for batch_idx, batch in enumerate(train_loader):
+  File "/usr/local/lib/python3.10/dist-packages/torch/utils/data/dataloader.py", line 732, in __next__
+    data = self._next_data()
+  File "/usr/local/lib/python3.10/dist-packages/torch/utils/data/dataloader.py", line 788, in _next_data
+    data = self._dataset_fetcher.fetch(index)  # may raise StopIteration
+  File "/usr/local/lib/python3.10/dist-packages/torch/utils/data/_utils/fetch.py", line 52, in fetch
+    data = [self.dataset[idx] for idx in possibly_batched_index]
+  File "/usr/local/lib/python3.10/dist-packages/torch/utils/data/_utils/fetch.py", line 52, in <listcomp>
+    data = [self.dataset[idx] for idx in possibly_batched_index]
+  File "/usr/local/lib/python3.10/dist-packages/torch/utils/data/dataset.py", line 346, in __getitem__
+    return self.datasets[dataset_idx][sample_idx]
+  File "/workspace/unitree_lerobot/lerobot/lerobot/common/datasets/lerobot_dataset.py", line 725, in __getitem__
+    item = self.hf_dataset[idx]
+  File "/usr/local/lib/python3.10/dist-packages/datasets/arrow_dataset.py", line 2782, in __getitem__
+    return self._getitem(key)
+  File "/usr/local/lib/python3.10/dist-packages/datasets/arrow_dataset.py", line 2767, in _getitem
+    formatted_output = format_table(
+  File "/usr/local/lib/python3.10/dist-packages/datasets/formatting/formatting.py", line 658, in format_table
+    return formatter(pa_table, query_type=query_type)
+  File "/usr/local/lib/python3.10/dist-packages/datasets/formatting/formatting.py", line 411, in __call__
+    return self.format_row(pa_table)
+  File "/usr/local/lib/python3.10/dist-packages/datasets/formatting/formatting.py", line 511, in format_row
+    formatted_batch = self.format_batch(pa_table)
+  File "/usr/local/lib/python3.10/dist-packages/datasets/formatting/formatting.py", line 541, in format_batch
+    return self.transform(batch)
+  File "/workspace/unitree_lerobot/lerobot/lerobot/common/datasets/utils.py", line 268, in hf_transform_to_torch
+    items_dict[key] = [to_tensor(img) for img in items_dict[key]]
+  File "/workspace/unitree_lerobot/lerobot/lerobot/common/datasets/utils.py", line 268, in <listcomp>
+    items_dict[key] = [to_tensor(img) for img in items_dict[key]]
+  File "/usr/local/lib/python3.10/dist-packages/torchvision/transforms/transforms.py", line 137, in __call__
+    return F.to_tensor(pic)
+  File "/usr/local/lib/python3.10/dist-packages/torchvision/transforms/functional.py", line 176, in to_tensor
+    return img.to(dtype=default_float_dtype).div(255)
+KeyboardInterrupt

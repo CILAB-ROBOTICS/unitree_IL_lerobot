@@ -1,0 +1,13 @@
+{"time":"2025-11-20T14:59:07.002395422Z","level":"INFO","msg":"stream: starting","core version":"0.23.0"}
+{"time":"2025-11-20T14:59:07.393975022Z","level":"INFO","msg":"stream: created new stream","id":"09c7of3j"}
+{"time":"2025-11-20T14:59:07.394065743Z","level":"INFO","msg":"handler: started","stream_id":"09c7of3j"}
+{"time":"2025-11-20T14:59:07.39429799Z","level":"INFO","msg":"stream: started","id":"09c7of3j"}
+{"time":"2025-11-20T14:59:07.394364355Z","level":"INFO","msg":"writer: started","stream_id":"09c7of3j"}
+{"time":"2025-11-20T14:59:07.394405572Z","level":"INFO","msg":"sender: started","stream_id":"09c7of3j"}
+{"time":"2025-11-20T23:04:24.763162274Z","level":"INFO","msg":"api: retrying HTTP error","status":502,"url":"https://api.wandb.ai/files/cilab-robot/clip-pretraining/09c7of3j/file_stream","body":"\n<html><head>\n<meta http-equiv=\"content-type\" content=\"text/html;charset=utf-8\">\n<title>502 Server Error</title>\n</head>\n<body text=#000000 bgcolor=#ffffff>\n<h1>Error: Server Error</h1>\n<h2>The server encountered a temporary error and could not complete your request.<p>Please try again in 30 seconds.</h2>\n<h2></h2>\n</body></html>\n"}
+{"time":"2025-11-22T04:29:03.478353811Z","level":"INFO","msg":"fileTransfer: Close: file transfer manager closed"}
+{"time":"2025-11-22T04:29:03.775894214Z","level":"INFO","msg":"handler: operation stats","stats":{}}
+{"time":"2025-11-22T04:29:03.779500911Z","level":"INFO","msg":"stream: closing","id":"09c7of3j"}
+{"time":"2025-11-22T04:29:03.779520638Z","level":"INFO","msg":"handler: closed","stream_id":"09c7of3j"}
+{"time":"2025-11-22T04:29:03.77960166Z","level":"INFO","msg":"sender: closed","stream_id":"09c7of3j"}
+{"time":"2025-11-22T04:29:03.779613372Z","level":"INFO","msg":"stream: closed","id":"09c7of3j"}

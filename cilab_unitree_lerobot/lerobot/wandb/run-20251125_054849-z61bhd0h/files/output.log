@@ -1,0 +1,39 @@
+Resolving data files: 100%|███████████████████████████████████████████████████████████████████████████████████| 20/20 [00:00<00:00, 142421.19it/s]
+Resolving data files: 100%|████████████████████████████████████████████████████████████████████████████████████| 20/20 [00:00<00:00, 38532.88it/s]
+  0%|                                                                                                                     | 0/100 [04:44<?, ?it/s]
+Traceback (most recent call last):
+  File "/workspace/cilab_unitree_lerobot/lerobot/lerobot/scripts/pretrain.py", line 742, in <module>
+    run_clip_pretraining(args)
+  File "/workspace/cilab_unitree_lerobot/lerobot/lerobot/scripts/pretrain.py", line 705, in run_clip_pretraining
+    clip_pretraining(train_dataset, test_dataset, train_features, save_dir=save_run_dir, args=args)
+  File "/workspace/cilab_unitree_lerobot/lerobot/lerobot/scripts/pretrain.py", line 497, in clip_pretraining
+    plt.imshow(plot_maps)
+  File "/usr/local/lib/python3.10/dist-packages/matplotlib/pyplot.py", line 3601, in imshow
+    __ret = gca().imshow(
+  File "/usr/local/lib/python3.10/dist-packages/matplotlib/__init__.py", line 1524, in inner
+    return func(
+  File "/usr/local/lib/python3.10/dist-packages/matplotlib/axes/_axes.py", line 5982, in imshow
+    im.set_data(X)
+  File "/usr/local/lib/python3.10/dist-packages/matplotlib/image.py", line 685, in set_data
+    self._A = self._normalize_image_array(A)
+  File "/usr/local/lib/python3.10/dist-packages/matplotlib/image.py", line 648, in _normalize_image_array
+    raise TypeError(f"Image data of dtype {A.dtype} cannot be "
+TypeError: Image data of dtype object cannot be converted to float
+Traceback (most recent call last):
+  File "/workspace/cilab_unitree_lerobot/lerobot/lerobot/scripts/pretrain.py", line 742, in <module>
+    run_clip_pretraining(args)
+  File "/workspace/cilab_unitree_lerobot/lerobot/lerobot/scripts/pretrain.py", line 705, in run_clip_pretraining
+    clip_pretraining(train_dataset, test_dataset, train_features, save_dir=save_run_dir, args=args)
+  File "/workspace/cilab_unitree_lerobot/lerobot/lerobot/scripts/pretrain.py", line 497, in clip_pretraining
+    plt.imshow(plot_maps)
+  File "/usr/local/lib/python3.10/dist-packages/matplotlib/pyplot.py", line 3601, in imshow
+    __ret = gca().imshow(
+  File "/usr/local/lib/python3.10/dist-packages/matplotlib/__init__.py", line 1524, in inner
+    return func(
+  File "/usr/local/lib/python3.10/dist-packages/matplotlib/axes/_axes.py", line 5982, in imshow
+    im.set_data(X)
+  File "/usr/local/lib/python3.10/dist-packages/matplotlib/image.py", line 685, in set_data
+    self._A = self._normalize_image_array(A)
+  File "/usr/local/lib/python3.10/dist-packages/matplotlib/image.py", line 648, in _normalize_image_array
+    raise TypeError(f"Image data of dtype {A.dtype} cannot be "
+TypeError: Image data of dtype object cannot be converted to float

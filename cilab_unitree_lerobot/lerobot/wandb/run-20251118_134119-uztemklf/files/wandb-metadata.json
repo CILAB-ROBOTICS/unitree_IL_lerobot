@@ -1,0 +1,58 @@
+{
+  "os": "Linux-6.8.0-85-generic-x86_64-with-glibc2.35",
+  "python": "CPython 3.10.12",
+  "startedAt": "2025-11-18T13:41:19.589881Z",
+  "args": [
+    "--train_dataset_id",
+    "eunjuri/towel_strong_train_full",
+    "eunjuri/towel_weak_train_full",
+    "--test_dataset_id",
+    "eunjuri/towel_strong_test_full",
+    "eunjuri/towel_weak_test_full",
+    "--n_epochs",
+    "100",
+    "--wandb_enable=true",
+    "--wandb_name=test"
+  ],
+  "program": "/workspace/cilab_unitree_lerobot/lerobot/lerobot/scripts/pretrain.py",
+  "codePath": "lerobot/scripts/pretrain.py",
+  "codePathLocal": "lerobot/scripts/pretrain.py",
+  "git": {
+    "remote": "https://github.com/CILAB-ROBOTICS/unitree_IL_lerobot.git"
+  },
+  "email": "ejkwon43@gm.gist.ac.kr",
+  "root": "/workspace/cilab_unitree_lerobot/lerobot",
+  "host": "e76ef2b817c4",
+  "executable": "/usr/bin/python",
+  "cpu_count": 64,
+  "cpu_count_logical": 128,
+  "gpu": "NVIDIA RTX A5000",
+  "gpu_count": 2,
+  "disk": {
+    "/": {
+      "total": "1967317549056",
+      "used": "1666155143168"
+    }
+  },
+  "memory": {
+    "total": "540615860224"
+  },
+  "gpu_nvidia": [
+    {
+      "name": "NVIDIA RTX A5000",
+      "memoryTotal": "25757220864",
+      "cudaCores": 8192,
+      "architecture": "Ampere",
+      "uuid": "GPU-0c394c29-8754-ccb9-17e1-01bdbeb68751"
+    },
+    {
+      "name": "NVIDIA RTX A5000",
+      "memoryTotal": "25757220864",
+      "cudaCores": 8192,
+      "architecture": "Ampere",
+      "uuid": "GPU-0e3309ce-2c1f-3603-9f6f-5282b4495185"
+    }
+  ],
+  "cudaVersion": "12.8",
+  "writerId": "f4brumdazjalvlqcfxv4ent7bg3bdgg7"
+}

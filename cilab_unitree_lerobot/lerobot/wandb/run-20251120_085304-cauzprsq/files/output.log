@@ -1,0 +1,122 @@
+Resolving data files: 100%|█████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 51/51 [00:00<00:00, 232510.33it/s]
+Resolving data files: 100%|██████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 41/41 [00:00<00:00, 60658.36it/s]
+Resolving data files: 100%|██████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 20/20 [00:00<00:00, 36567.60it/s]
+  0%|                                                                                                                                                               | 0/100 [00:00<?, ?it/s]WARNING 2025-11-20 09:07:58 /pretrain.py:44 Requested top-10 but batch size is 8.
+WARNING 2025-11-20 09:13:12 /pretrain.py:44 Requested top-5 but batch size is 1.
+WARNING 2025-11-20 09:13:12 /pretrain.py:44 Requested top-10 but batch size is 1.
+  1%|█▍                                                                                                                                                | 1/100 [19:59<32:59:28, 1199.68s/it]WARNING 2025-11-20 09:27:36 /pretrain.py:44 Requested top-10 but batch size is 8.
+WARNING 2025-11-20 09:32:48 /pretrain.py:44 Requested top-5 but batch size is 1.
+WARNING 2025-11-20 09:32:48 /pretrain.py:44 Requested top-10 but batch size is 1.
+  2%|██▉                                                                                                                                               | 2/100 [39:35<32:16:59, 1185.91s/it]WARNING 2025-11-20 09:47:14 /pretrain.py:44 Requested top-10 but batch size is 8.
+WARNING 2025-11-20 09:52:25 /pretrain.py:44 Requested top-5 but batch size is 1.
+WARNING 2025-11-20 09:52:25 /pretrain.py:44 Requested top-10 but batch size is 1.
+  3%|████▍                                                                                                                                             | 3/100 [59:12<31:50:25, 1181.71s/it]WARNING 2025-11-20 10:06:45 /pretrain.py:44 Requested top-10 but batch size is 8.
+WARNING 2025-11-20 10:11:53 /pretrain.py:44 Requested top-5 but batch size is 1.
+WARNING 2025-11-20 10:11:53 /pretrain.py:44 Requested top-10 but batch size is 1.
+  4%|█████▊                                                                                                                                          | 4/100 [1:18:41<31:22:17, 1176.43s/it]WARNING 2025-11-20 10:26:09 /pretrain.py:44 Requested top-10 but batch size is 8.
+WARNING 2025-11-20 10:31:20 /pretrain.py:44 Requested top-5 but batch size is 1.
+WARNING 2025-11-20 10:31:20 /pretrain.py:44 Requested top-10 but batch size is 1.
+  5%|███████▏                                                                                                                                        | 5/100 [1:38:07<30:57:14, 1172.99s/it]WARNING 2025-11-20 10:45:47 /pretrain.py:44 Requested top-10 but batch size is 8.
+WARNING 2025-11-20 10:50:59 /pretrain.py:44 Requested top-5 but batch size is 1.
+WARNING 2025-11-20 10:50:59 /pretrain.py:44 Requested top-10 but batch size is 1.
+  6%|████████▋                                                                                                                                       | 6/100 [1:57:46<30:40:42, 1174.92s/it]WARNING 2025-11-20 11:05:20 /pretrain.py:44 Requested top-10 but batch size is 8.
+WARNING 2025-11-20 11:10:32 /pretrain.py:44 Requested top-5 but batch size is 1.
+WARNING 2025-11-20 11:10:32 /pretrain.py:44 Requested top-10 but batch size is 1.
+  7%|██████████                                                                                                                                      | 7/100 [2:17:20<30:20:26, 1174.48s/it]WARNING 2025-11-20 11:25:02 /pretrain.py:44 Requested top-10 but batch size is 8.
+WARNING 2025-11-20 11:30:19 /pretrain.py:44 Requested top-5 but batch size is 1.
+WARNING 2025-11-20 11:30:19 /pretrain.py:44 Requested top-10 but batch size is 1.
+  8%|███████████▌                                                                                                                                    | 8/100 [2:37:07<30:07:07, 1178.55s/it]WARNING 2025-11-20 11:45:00 /pretrain.py:44 Requested top-10 but batch size is 8.
+WARNING 2025-11-20 11:50:21 /pretrain.py:44 Requested top-5 but batch size is 1.
+WARNING 2025-11-20 11:50:21 /pretrain.py:44 Requested top-10 but batch size is 1.
+  9%|████████████▉                                                                                                                                   | 9/100 [2:57:09<29:58:25, 1185.77s/it]WARNING 2025-11-20 12:05:00 /pretrain.py:44 Requested top-10 but batch size is 8.
+WARNING 2025-11-20 12:10:23 /pretrain.py:44 Requested top-5 but batch size is 1.
+WARNING 2025-11-20 12:10:23 /pretrain.py:44 Requested top-10 but batch size is 1.
+ 10%|██████████████▎                                                                                                                                | 10/100 [3:17:10<29:46:08, 1190.76s/it]WARNING 2025-11-20 12:25:23 /pretrain.py:44 Requested top-10 but batch size is 8.
+WARNING 2025-11-20 12:30:46 /pretrain.py:44 Requested top-5 but batch size is 1.
+WARNING 2025-11-20 12:30:46 /pretrain.py:44 Requested top-10 but batch size is 1.
+ 11%|███████████████▋                                                                                                                               | 11/100 [3:37:33<29:40:43, 1200.49s/it]WARNING 2025-11-20 12:45:46 /pretrain.py:44 Requested top-10 but batch size is 8.
+WARNING 2025-11-20 12:51:11 /pretrain.py:44 Requested top-5 but batch size is 1.
+WARNING 2025-11-20 12:51:11 /pretrain.py:44 Requested top-10 but batch size is 1.
+ 12%|█████████████████▏                                                                                                                             | 12/100 [3:57:59<29:31:53, 1208.11s/it]WARNING 2025-11-20 13:06:03 /pretrain.py:44 Requested top-10 but batch size is 8.
+WARNING 2025-11-20 13:11:31 /pretrain.py:44 Requested top-5 but batch size is 1.
+WARNING 2025-11-20 13:11:31 /pretrain.py:44 Requested top-10 but batch size is 1.
+ 13%|██████████████████▌                                                                                                                            | 13/100 [4:18:18<29:16:51, 1211.63s/it]WARNING 2025-11-20 13:26:33 /pretrain.py:44 Requested top-10 but batch size is 8.
+WARNING 2025-11-20 13:32:02 /pretrain.py:44 Requested top-5 but batch size is 1.
+WARNING 2025-11-20 13:32:02 /pretrain.py:44 Requested top-10 but batch size is 1.
+ 14%|████████████████████                                                                                                                           | 14/100 [4:38:49<29:04:59, 1217.43s/it]WARNING 2025-11-20 13:47:02 /pretrain.py:44 Requested top-10 but batch size is 8.
+WARNING 2025-11-20 13:52:30 /pretrain.py:44 Requested top-5 but batch size is 1.
+WARNING 2025-11-20 13:52:30 /pretrain.py:44 Requested top-10 but batch size is 1.
+ 15%|█████████████████████▍                                                                                                                         | 15/100 [4:59:17<28:49:20, 1220.72s/it]WARNING 2025-11-20 14:07:20 /pretrain.py:44 Requested top-10 but batch size is 8.
+WARNING 2025-11-20 14:12:49 /pretrain.py:44 Requested top-5 but batch size is 1.
+WARNING 2025-11-20 14:12:49 /pretrain.py:44 Requested top-10 but batch size is 1.
+ 16%|██████████████████████▉                                                                                                                        | 16/100 [5:19:37<28:28:20, 1220.24s/it]WARNING 2025-11-20 14:27:53 /pretrain.py:44 Requested top-10 but batch size is 8.
+WARNING 2025-11-20 14:33:23 /pretrain.py:44 Requested top-5 but batch size is 1.
+WARNING 2025-11-20 14:33:23 /pretrain.py:44 Requested top-10 but batch size is 1.
+ 17%|████████████████████████▎                                                                                                                      | 17/100 [5:40:11<28:13:50, 1224.46s/it]WARNING 2025-11-20 14:48:20 /pretrain.py:44 Requested top-10 but batch size is 8.
+WARNING 2025-11-20 14:53:50 /pretrain.py:44 Requested top-5 but batch size is 1.
+WARNING 2025-11-20 14:53:50 /pretrain.py:44 Requested top-10 but batch size is 1.
+ 18%|█████████████████████████▋                                                                                                                     | 18/100 [6:05:30<27:45:07, 1218.38s/it]
+Traceback (most recent call last):
+  File "/workspace/cilab_unitree_lerobot/lerobot/lerobot/scripts/pretrain.py", line 646, in <module>
+    run_clip_pretraining(args)
+  File "/workspace/cilab_unitree_lerobot/lerobot/lerobot/scripts/pretrain.py", line 609, in run_clip_pretraining
+    clip_pretraining(train_dataset, test_dataset, train_features, save_dir=save_run_dir, args=args)
+  File "/workspace/cilab_unitree_lerobot/lerobot/lerobot/scripts/pretrain.py", line 228, in clip_pretraining
+    for batch_idx, batch in enumerate(train_loader):
+  File "/usr/local/lib/python3.10/dist-packages/torch/utils/data/dataloader.py", line 732, in __next__
+    data = self._next_data()
+  File "/usr/local/lib/python3.10/dist-packages/torch/utils/data/dataloader.py", line 788, in _next_data
+    data = self._dataset_fetcher.fetch(index)  # may raise StopIteration
+  File "/usr/local/lib/python3.10/dist-packages/torch/utils/data/_utils/fetch.py", line 52, in fetch
+    data = [self.dataset[idx] for idx in possibly_batched_index]
+  File "/usr/local/lib/python3.10/dist-packages/torch/utils/data/_utils/fetch.py", line 52, in <listcomp>
+    data = [self.dataset[idx] for idx in possibly_batched_index]
+  File "/usr/local/lib/python3.10/dist-packages/torch/utils/data/dataset.py", line 346, in __getitem__
+    return self.datasets[dataset_idx][sample_idx]
+  File "/workspace/unitree_lerobot/lerobot/lerobot/common/datasets/lerobot_dataset.py", line 739, in __getitem__
+    video_frames = self._query_videos(query_timestamps, ep_idx)
+  File "/workspace/unitree_lerobot/lerobot/lerobot/common/datasets/lerobot_dataset.py", line 711, in _query_videos
+    frames = decode_video_frames(video_path, query_ts, self.tolerance_s, self.video_backend)
+  File "/workspace/unitree_lerobot/lerobot/lerobot/common/datasets/video_utils.py", line 66, in decode_video_frames
+    return decode_video_frames_torchcodec(video_path, timestamps, tolerance_s)
+  File "/workspace/unitree_lerobot/lerobot/lerobot/common/datasets/video_utils.py", line 195, in decode_video_frames_torchcodec
+    decoder = VideoDecoder(video_path, device=device, seek_mode="approximate")
+  File "/usr/local/lib/python3.10/dist-packages/torchcodec/decoders/_video_decoder.py", line 134, in __init__
+    self._decoder = create_decoder(source=source, seek_mode=seek_mode)
+  File "/usr/local/lib/python3.10/dist-packages/torchcodec/decoders/_decoder_utils.py", line 31, in create_decoder
+    return core.create_from_file(str(source), seek_mode)
+  File "/usr/local/lib/python3.10/dist-packages/torch/_ops.py", line 841, in __call__
+    return self._op(*args, **kwargs)
+KeyboardInterrupt
+Traceback (most recent call last):
+  File "/workspace/cilab_unitree_lerobot/lerobot/lerobot/scripts/pretrain.py", line 646, in <module>
+    run_clip_pretraining(args)
+  File "/workspace/cilab_unitree_lerobot/lerobot/lerobot/scripts/pretrain.py", line 609, in run_clip_pretraining
+    clip_pretraining(train_dataset, test_dataset, train_features, save_dir=save_run_dir, args=args)
+  File "/workspace/cilab_unitree_lerobot/lerobot/lerobot/scripts/pretrain.py", line 228, in clip_pretraining
+    for batch_idx, batch in enumerate(train_loader):
+  File "/usr/local/lib/python3.10/dist-packages/torch/utils/data/dataloader.py", line 732, in __next__
+    data = self._next_data()
+  File "/usr/local/lib/python3.10/dist-packages/torch/utils/data/dataloader.py", line 788, in _next_data
+    data = self._dataset_fetcher.fetch(index)  # may raise StopIteration
+  File "/usr/local/lib/python3.10/dist-packages/torch/utils/data/_utils/fetch.py", line 52, in fetch
+    data = [self.dataset[idx] for idx in possibly_batched_index]
+  File "/usr/local/lib/python3.10/dist-packages/torch/utils/data/_utils/fetch.py", line 52, in <listcomp>
+    data = [self.dataset[idx] for idx in possibly_batched_index]
+  File "/usr/local/lib/python3.10/dist-packages/torch/utils/data/dataset.py", line 346, in __getitem__
+    return self.datasets[dataset_idx][sample_idx]
+  File "/workspace/unitree_lerobot/lerobot/lerobot/common/datasets/lerobot_dataset.py", line 739, in __getitem__
+    video_frames = self._query_videos(query_timestamps, ep_idx)
+  File "/workspace/unitree_lerobot/lerobot/lerobot/common/datasets/lerobot_dataset.py", line 711, in _query_videos
+    frames = decode_video_frames(video_path, query_ts, self.tolerance_s, self.video_backend)
+  File "/workspace/unitree_lerobot/lerobot/lerobot/common/datasets/video_utils.py", line 66, in decode_video_frames
+    return decode_video_frames_torchcodec(video_path, timestamps, tolerance_s)
+  File "/workspace/unitree_lerobot/lerobot/lerobot/common/datasets/video_utils.py", line 195, in decode_video_frames_torchcodec
+    decoder = VideoDecoder(video_path, device=device, seek_mode="approximate")
+  File "/usr/local/lib/python3.10/dist-packages/torchcodec/decoders/_video_decoder.py", line 134, in __init__
+    self._decoder = create_decoder(source=source, seek_mode=seek_mode)
+  File "/usr/local/lib/python3.10/dist-packages/torchcodec/decoders/_decoder_utils.py", line 31, in create_decoder
+    return core.create_from_file(str(source), seek_mode)
+  File "/usr/local/lib/python3.10/dist-packages/torch/_ops.py", line 841, in __call__
+    return self._op(*args, **kwargs)
+KeyboardInterrupt
