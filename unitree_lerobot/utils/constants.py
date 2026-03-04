@@ -212,7 +212,7 @@ G1_INSPIRE_CONFIG = TactileRobotConfig(
         "right_tactile_thumb_middle",  # 3*3
         "right_tactile_thumb_pad",  # 12*8
         "right_tactile_palm",  # 8*14
-        "carpet_0",  # 32*32
+        #"carpet_0",  # 32*32
     ],
     tactile_to_image_shape = OrderedDict({
         "left_tactile_little_finger_tip": (3, 3, 3),
@@ -249,7 +249,7 @@ G1_INSPIRE_CONFIG = TactileRobotConfig(
         "right_tactile_thumb_middle": (3, 3, 3),
         "right_tactile_thumb_pad": (3, 12, 8),
         "right_tactile_palm": (3, 8, 14),
-        "carpet_0": (3, 32, 32),
+        #"carpet_0": (3, 32, 32),
     }),
     tactile_to_state_indices = OrderedDict({
         "left_tactile_little_finger_tip": [0, 1, 2, 3, 4, 5, 6, 7, 8],  # 3*3 -> 3*3
@@ -295,9 +295,9 @@ G1_INSPIRE_CONFIG = TactileRobotConfig(
         "right_tactile_index_knuckle": [1043, 1044, 1051, 1052],  # 8*14 -> 2*2
         "right_tactile_palm": [1039, 1040, 1047, 1048],  # 8*14 -> 2*2
     }),
-    camera_to_image_key = {'color_0': 'cam_left_high', 'color_3':'cam_third',},
-    json_state_data_name = ['left_arm', 'right_arm', 'left_hand', 'right_hand'],
-    json_action_data_name = ['left_arm', 'right_arm', 'left_hand', 'right_hand']
+    camera_to_image_key = {'color_0': 'cam_left_high'},
+    json_state_data_name = ['left_arm', 'right_arm', 'left_ee', 'right_ee'],
+    json_action_data_name = ['left_arm', 'right_arm', 'left_ee', 'right_ee'],
 )
 
 

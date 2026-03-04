@@ -42,6 +42,8 @@ class DatasetConfig:
 
 DEFAULT_DATASET_CONFIG = DatasetConfig()
 
+# Max sequence length for language tokens (byte-level tokenizer)
+LANG_MAX_LEN = 48
 
 class JsonDataset:
     def __init__(self, data_dirs: Path, robot_type: str, tactile_enc_type: str) -> None:
@@ -68,18 +70,24 @@ class JsonDataset:
 
     def _init_paths(self) -> None:
         """Initialize episode and task paths."""
-
         self.episode_paths = []
         self.task_paths = []
-        
-        for task_path in glob.glob(os.path.join(self.data_dirs, '*')):
-            if os.path.isdir(task_path):
-                episode_paths = glob.glob(os.path.join(task_path))
-                if episode_paths:
-                    self.task_paths.append(task_path)
-                    self.episode_paths.extend(episode_paths)
-        
+
+        # Recursively discover episodes: any directory under `data_dirs`
+        # that contains a `data.json` file is considered an episode.
+        for root, dirs, files in os.walk(self.data_dirs):
+            if 'data.json' in files:
+                # treat `root` as an episode folder
+                self.episode_paths.append(root)
+                # consider the parent dir as a task if it's directly under data_dirs
+                parent = os.path.dirname(root)
+                if os.path.commonpath([parent, str(self.data_dirs)]) == str(self.data_dirs):
+                    if parent not in self.task_paths:
+                        self.task_paths.append(parent)
+
+        # sort for deterministic order
         self.episode_paths = sorted(self.episode_paths)
+        self.task_paths = sorted(self.task_paths)
         self.episode_ids = list(range(len(self.episode_paths)))
 
 
@@ -209,7 +217,28 @@ class JsonDataset:
 
         return tactiles
 
+    def _tokenize_text(self, text: str):
+        """Simple deterministic byte-level tokenizer.
 
+        Encodes the UTF-8 bytes of the input text, truncates or pads to
+        `LANG_MAX_LEN`. Returns `(tokens, attention_mask)` where tokens
+        are int32 and attention_mask is int8.
+        """
+        if text is None:
+            text = ""
+        b = text.encode('utf-8')
+        arr = np.frombuffer(b, dtype=np.uint8).astype(np.int32)
+        length = arr.shape[0]
+        if length >= LANG_MAX_LEN:
+            tokens = arr[:LANG_MAX_LEN]
+            attention = np.ones(LANG_MAX_LEN, dtype=np.int8)
+        else:
+            pad = LANG_MAX_LEN - length
+            tokens = np.concatenate([arr, np.zeros(pad, dtype=np.int32)])
+            attention = np.concatenate([np.ones(length, dtype=np.int8), np.zeros(pad, dtype=np.int8)])
+        return tokens, attention
+
+    '''
     def _parse_external_tactiles(
         self,
         episode_path,
@@ -244,7 +273,7 @@ class JsonDataset:
                 image_rgb = cv2.cvtColor(transposed_data, cv2.COLOR_GRAY2RGB)
                 tactiles[key].append(image_rgb)
         return tactiles
-
+    '''
 
     def get_item(self, index: Optional[int] = None,) -> Dict:
         """Get a training sample from the dataset.  """
@@ -261,6 +290,9 @@ class JsonDataset:
         
         # Load task description
         task = episode_data.get('text', {}).get('goal', "")
+
+        # Tokenize task text once per episode
+        language_tokens, language_attention = self._tokenize_text(task)
         
         # Load camera images
         cameras = self._parse_images(file_path, episode_data)
@@ -277,8 +309,8 @@ class JsonDataset:
             state = np.concatenate([state, state_tactiles], axis=-1)
 
         # Load external tactile data if available
-        external_tactiles = self._parse_external_tactiles(file_path, episode_data)
-        tactiles.update(external_tactiles)
+        #external_tactiles = self._parse_external_tactiles(file_path, episode_data)
+        #tactiles.update(external_tactiles)
 
         # Extract camera configuration
         cam_height, cam_width = next(img for imgs in cameras.values() if imgs for img in imgs).shape[:2]
@@ -291,13 +323,15 @@ class JsonDataset:
         }
         
         return {'episode_index': index,
-                'episode_length': episode_length,
-                'state': state, 
-                'action': action,
-                'cameras': cameras,
-                'tactiles': tactiles,
-                'task': task,
-                'data_cfg':data_cfg}
+            'episode_length': episode_length,
+            'state': state, 
+            'action': action,
+            'cameras': cameras,
+            'tactiles': tactiles,
+            'task': task,
+            'language_tokens': language_tokens,
+            'language_attention': language_attention,
+            'data_cfg':data_cfg}
 
 
 def create_empty_dataset(
@@ -329,6 +363,18 @@ def create_empty_dataset(
                 motors,
             ],
         },
+    }
+
+    # Language features: raw string, tokens and attention mask
+    features["observation.language.tokens"] = {
+        "dtype": "int32",
+        "shape": (LANG_MAX_LEN,),
+        "names": ["seq"],
+    }
+    features["observation.language.attention_mask"] = {
+        "dtype": "int8",
+        "shape": (LANG_MAX_LEN,),
+        "names": ["seq"],
     }
 
     if has_velocity:
@@ -387,7 +433,7 @@ def create_empty_dataset(
         }
 
         # No need to add tactile images if using state encoding
-        tactiles = ["carpet_0"] if "carpet_0" in tactiles else []  # TODO: check whether hardcoded is required
+        #tactiles = ["carpet_0"] if "carpet_0" in tactiles else []  # TODO: check whether hardcoded is required
 
     for tactile in tactiles:
         features[f"observation.images.{tactile}"] = {
@@ -439,6 +485,8 @@ def populate_dataset(
             frame = {
                 "observation.state": state[i], # mod
                 "action": action[i],
+                "observation.language.tokens": episode["language_tokens"],
+                "observation.language.attention_mask": episode["language_attention"],
                 "task": task
             }
 
