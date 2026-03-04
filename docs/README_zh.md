@@ -1,5 +1,5 @@
 <div align="center">
-  <h1 align="center"> unitree_IL_lerobot </h1>
+  <h1 align="center"> unitree_lerobot </h1>
   <h3 align="center"> Unitree Robotics </h3>
   <p align="center">
     <a href="../README.md"> English </a> | <a href="./README_zh.md">中文</a>
@@ -35,7 +35,7 @@
 
 ```bash
 # 下载源码
-git clone --recurse-submodules https://github.com/unitreerobotics/unitree_IL_lerobot.git
+git clone --recurse-submodules https://github.com/unitreerobotics/unitree_lerobot.git
 
 # 已经下载:
 git submodule update --init --recursive
@@ -124,7 +124,7 @@ python unitree_lerobot/utils/sort_and_rename_folders.py \
 
 ### 2.3.2 🔄 转换
 
-转换`json`格式到`lerobot`格式，你可以根据 [ROBOT_CONFIGS](https://github.com/unitreerobotics/unitree_IL_lerobot/blob/main/unitree_lerobot/utils/convert_unitree_json_to_lerobot.py#L154) 去定义自己的 `robot_type`
+转换`json`格式到`lerobot`格式，你可以根据 [ROBOT_CONFIGS](https://github.com/unitreerobotics/unitree_lerobot/blob/main/unitree_lerobot/utils/convert_unitree_json_to_lerobot.py#L154) 去定义自己的 `robot_type`
 
 ```bash
 # --raw-dir     对应json的数据集目录

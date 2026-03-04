@@ -1,5 +1,5 @@
 <div align="center">
-  <h1 align="center"> unitree_IL_lerobot </h1>
+  <h1 align="center"> unitree_lerobot </h1>
   <h3 align="center"> Unitree Robotics </h3>
   <p align="center">
     <a href="./README.md"> English </a> | <a href="./docs/README_zh.md">中文</a>
@@ -56,7 +56,7 @@ The purpose of this project is to use the [LeRobot](https://github.com/huggingfa
 
 ```bash
 # Clone the source code
-git clone --recurse-submodules https://github.com/unitreerobotics/unitree_IL_lerobot.git
+git clone --recurse-submodules https://github.com/unitreerobotics/unitree_lerobot.git
 
 # If already downloaded:
 git submodule update --init --recursive
@@ -147,7 +147,7 @@ python unitree_lerobot/utils/sort_and_rename_folders.py \
 
 #### 2.3.2 🔄 Conversion
 
-Convert `Unitree JSON` Dataset to `LeRobot` Format. You can define your own `robot_type` based on [ROBOT_CONFIGS](https://github.com/unitreerobotics/unitree_IL_lerobot/blob/main/unitree_lerobot/utils/convert_unitree_json_to_lerobot.py#L154).
+Convert `Unitree JSON` Dataset to `LeRobot` Format. You can define your own `robot_type` based on [ROBOT_CONFIGS](https://github.com/unitreerobotics/unitree_lerobot/blob/main/unitree_lerobot/utils/convert_unitree_json_to_lerobot.py#L154).
 
 ```bash
 # --raw-dir     Corresponds to the directory of your JSON dataset
