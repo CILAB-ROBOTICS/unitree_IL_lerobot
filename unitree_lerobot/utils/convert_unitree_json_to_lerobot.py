@@ -436,7 +436,7 @@ def create_empty_dataset(
         #tactiles = ["carpet_0"] if "carpet_0" in tactiles else []  # TODO: check whether hardcoded is required
 
     for tactile in tactiles:
-        features[f"observation.images.{tactile}"] = {
+        features[f"observation.tactiles.{tactile}"] = {
             "dtype": "image",
             "shape": tactile_to_image_shape[tactile],
             "names": [
@@ -494,7 +494,7 @@ def populate_dataset(
                 frame[f"observation.images.{camera}"] = img_array[i]
 
             for tactile, tactile_array in episode["tactiles"].items():
-                frame[f"observation.images.{tactile}"] = tactile_array[i]
+                frame[f"observation.tactiles.{tactile}"] = tactile_array[i]
 
             dataset.add_frame(frame)
 
@@ -506,7 +506,7 @@ def populate_dataset(
 def json_to_lerobot(
     raw_dir: Path,
     repo_id: str,
-    robot_type: str,        # Unitree_Z1_Dual, Unitree_G1_Gripper, Unitree_G1_Dex3
+    robot_type: str, # Unitree_Z1_Dual, Unitree_G1_Gripper, Unitree_G1_Dex3
     tactile_enc_type: Literal["image", "state"] = "image",
     *,
     push_to_hub: bool = False,

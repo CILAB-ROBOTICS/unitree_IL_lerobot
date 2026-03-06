@@ -295,7 +295,7 @@ G1_INSPIRE_CONFIG = TactileRobotConfig(
         "right_tactile_index_knuckle": [1043, 1044, 1051, 1052],  # 8*14 -> 2*2
         "right_tactile_palm": [1039, 1040, 1047, 1048],  # 8*14 -> 2*2
     }),
-    camera_to_image_key = {'color_0': 'cam_left_high'},
+    camera_to_image_key = {'color_0': 'cam_left_high', 'color_4': 'cam_third'},
     json_state_data_name = ['left_arm', 'right_arm', 'left_ee', 'right_ee'],
     json_action_data_name = ['left_arm', 'right_arm', 'left_ee', 'right_ee'],
 )
