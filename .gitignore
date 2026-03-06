@@ -1,8 +1,10 @@
 .cursor
 .vscode
+.ruff_cache
 __pycache__/
 figure.png
 unitree_sdk2_python/
+unitree_lerobot.egg-info
 
 cam_high.jpg
 cam_right_wrist.jpg
@@ -12,3 +14,6 @@ shells
 outputs
 
 **/wandb/
+
+data/
+./data
