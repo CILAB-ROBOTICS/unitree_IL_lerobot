@@ -13,8 +13,8 @@ from lerobot.processor import PolicyAction, PolicyProcessorPipeline
 
 import logging_mp
 
-logging_mp.basic_config(level=logging_mp.INFO)
-logger_mp = logging_mp.get_logger(__name__)
+logging_mp.basicConfig(level=logging_mp.INFO)
+logger_mp = logging_mp.getLogger(__name__)
 
 
 def extract_observation(step: dict):
@@ -124,6 +124,7 @@ class EvalRealConfig:
     # Basic control parameters
     arm: str = "G1_29"  # G1_29, G1_23
     ee: str = "dex3"  # dex3, dex1, inspire1, brainco
+    tactile_use: bool = False  # Whether to use tactile sensors
 
     # Mode flags
     motion: bool = False
@@ -131,6 +132,7 @@ class EvalRealConfig:
     visualization: bool = False
     send_real_robot: bool = False
     use_dataset: bool = False
+    dummy: bool = False  # Run in dummy mode without real hardware
 
     rename_map: dict[str, str] = field(default_factory=dict)
 

@@ -26,8 +26,8 @@ from unitree_sdk2py.idl.std_msgs.msg.dds_ import String_
 
 import logging_mp
 
-logging_mp.basic_config(level=logging_mp.INFO)
-logger_mp = logging_mp.get_logger(__name__)
+logging_mp.basicConfig(level=logging_mp.INFO)
+logger_mp = logging_mp.getLogger(__name__)
 
 # Configuration for robot arms
 ARM_CONFIG = {
@@ -56,6 +56,7 @@ EE_CONFIG: dict[str, dict[str, Any]] = {
         "dof": 6,
         "shared_mem_type": "Array",
         "shared_mem_size": 6,
+        "touch_size": 1062 * 2,  # for tactile data
         # "out_len": 12,
     },
     "brainco": {
@@ -188,7 +189,17 @@ def setup_robot_interface(args: argparse.Namespace) -> dict[str, Any]:
 
         state_arr, action_arr = Array("d", out_len, lock=False), Array("d", out_len, lock=False)
 
-        ee_ctrl = spec["controller"](left_in, right_in, data_lock, state_arr, action_arr, simulation_mode=is_sim)
+        # For tactile data
+        touch_arr = None
+        force_arr = None
+        if "touch_size" in spec:
+            touch_arr = Array("d", spec["touch_size"], lock=False)
+            force_arr = Array("d", out_len, lock=False)  # assuming force has same size as state
+
+        if ee_key == "inspire1" and touch_arr is not None:
+            ee_ctrl = spec["controller"](left_in, right_in, data_lock, state_arr, action_arr, touch_arr, force_arr, simulation_mode=is_sim)
+        else:
+            ee_ctrl = spec["controller"](left_in, right_in, data_lock, state_arr, action_arr, simulation_mode=is_sim)
 
         ee_shared_mem = {
             "left": left_in,
@@ -197,6 +208,10 @@ def setup_robot_interface(args: argparse.Namespace) -> dict[str, Any]:
             "action": action_arr,
             "lock": data_lock,
         }
+        if touch_arr is not None:
+            ee_shared_mem["touch"] = touch_arr
+        if force_arr is not None:
+            ee_shared_mem["force"] = force_arr
 
     # ---------- Simulation helpers (optional) ----------
     episode_writer = None
