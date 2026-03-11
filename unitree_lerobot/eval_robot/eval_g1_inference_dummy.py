@@ -50,6 +50,47 @@ import logging_mp
 #logger_mp = logging_mp.getLogger(__name__)
 
 
+def keep_single_camera_observation(
+    observation: dict[str, Any],
+    camera_key: str = "observation.images.cam_left_high",
+) -> dict[str, Any]:
+    """Keep only one head/wrist camera image key and preserve non-camera keys."""
+    filtered_observation: dict[str, Any] = {}
+    for key, value in observation.items():
+        if key.startswith("observation.images.cam_") and key != camera_key:
+            continue
+        filtered_observation[key] = value
+    return filtered_observation
+
+
+def apply_rename_map_to_observation(
+    observation: dict[str, Any],
+    rename_map: dict[str, str],
+) -> dict[str, Any]:
+    """Rename observation keys at runtime so policy expected feature names are present."""
+    renamed_observation = dict(observation)
+    for source_key, target_key in rename_map.items():
+        if source_key in renamed_observation:
+            renamed_observation[target_key] = renamed_observation.pop(source_key)
+    return renamed_observation
+
+
+def align_action_stats_to_policy(
+    dataset_stats: dict[str, dict[str, Any]],
+    target_action_dim: int,
+) -> dict[str, dict[str, Any]]:
+    """Slice action stats to match policy action dimension when they differ."""
+    action_stats = dataset_stats.get("action")
+    if action_stats is None:
+        return dataset_stats
+
+    for stat_name, stat_value in action_stats.items():
+        if hasattr(stat_value, "shape") and len(stat_value.shape) == 1 and stat_value.shape[0] > target_action_dim:
+            action_stats[stat_name] = stat_value[:target_action_dim]
+
+    return dataset_stats
+
+
 def eval_policy(
     cfg: EvalRealConfig,
     dataset: LeRobotDataset,
@@ -59,7 +100,7 @@ def eval_policy(
 ):
     assert isinstance(policy, nn.Module), "Policy must be a PyTorch nn module."
 
-    logger_mp.info(f"Arguments: {cfg}")
+    #logger_mp.info(f"Arguments: {cfg}")
 
     if cfg.visualization:
         rerun_logger = RerunLogger()
@@ -93,7 +134,7 @@ def eval_policy(
 
     # Dummy mode: simulate without real hardware
     if getattr(cfg, 'dummy', False):
-        logger_mp.info("Running in dummy mode - no real hardware interaction")
+        #logger_mp.info("Running in dummy mode - no real hardware interaction")
         # Simulate setup
         arm_dof = 14
         ee_dof = 6 if cfg.ee == "inspire1" else 0
@@ -106,9 +147,9 @@ def eval_policy(
         idx = 0
         print(f"user_input: {user_input}")
         if user_input.lower() == "s":
-            logger_mp.info("Dummy: Initializing robot to starting pose...")
+            #logger_mp.info("Dummy: Initializing robot to starting pose...")
             # Skip real initialization
-            logger_mp.info("Dummy: Starting evaluation loop.")
+            #logger_mp.info("Dummy: Starting evaluation loop.")
             for idx in range(10):  # Run 10 dummy steps
                 loop_start_time = time.perf_counter()
                 # 1. Generate dummy observations
@@ -149,6 +190,9 @@ def eval_policy(
                                 torch.from_numpy(tactiles.pop(key)) for key in sorted(tactiles.keys())
                             ], axis=-1)
 
+                observation = keep_single_camera_observation(observation)
+                observation = apply_rename_map_to_observation(observation, cfg.rename_map)
+
                 state_tensor = torch.from_numpy(
                     np.concatenate((current_arm_q, left_ee_state, right_ee_state), axis=0)
                 ).float()
@@ -169,24 +213,24 @@ def eval_policy(
                     robot_type=None,
                 )
                 action_np = action.cpu().numpy()
-                logger_mp.info(f"Dummy step {idx}: Action shape {action_np.shape}, mean {action_np.mean():.4f}")
+                #logger_mp.info(f"Dummy step {idx}: Action shape {action_np.shape}, mean {action_np.mean():.4f}")
 
                 # 3. Dummy action execution (just log)
                 arm_action = action_np[:arm_dof]
-                logger_mp.info(f"Dummy: Arm action - mean {arm_action.mean():.4f}")
+                #logger_mp.info(f"Dummy: Arm action - mean {arm_action.mean():.4f}")
 
                 if cfg.ee:
                     ee_action_start_idx = arm_dof
                     left_ee_action = action_np[ee_action_start_idx : ee_action_start_idx + ee_dof]
                     right_ee_action = action_np[ee_action_start_idx + ee_dof : ee_action_start_idx + 2 * ee_dof]
-                    logger_mp.info(f"Dummy: EE actions - left mean {left_ee_action.mean():.4f}, right mean {right_ee_action.mean():.4f}")
+                    #logger_mp.info(f"Dummy: EE actions - left mean {left_ee_action.mean():.4f}, right mean {right_ee_action.mean():.4f}")
 
                 if cfg.visualization:
                     visualization_data(idx, observation, state_tensor.numpy(), action_np, rerun_logger)
                 idx += 1
                 # Simulate frequency
                 time.sleep(max(0, (1.0 / cfg.frequency) - (time.perf_counter() - loop_start_time)))
-        logger_mp.info("Dummy evaluation completed")
+        #logger_mp.info("Dummy evaluation completed")
         return
 
     # Original code for real hardware
@@ -223,12 +267,12 @@ def eval_policy(
         full_state = None
         if user_input.lower() == "s":
             # "The initial positions of the robot's arm and fingers take the initial positions during data recording."
-            logger_mp.info("Initializing robot to starting pose...")
+            #.info("Initializing robot to starting pose...")
             tau = robot_interface["arm_ik"].solve_tau(init_arm_pose)
             robot_interface["arm_ctrl"].ctrl_dual_arm(init_arm_pose, tau)
             time.sleep(1.0)  # Give time for the robot to move
             # --- Run Main Loop ---
-            logger_mp.info(f"Starting evaluation loop at {cfg.frequency} Hz.")
+            #logger_mp.info(f"Starting evaluation loop at {cfg.frequency} Hz.")
             while True:
                 loop_start_time = time.perf_counter()
                 # 1. Get Observations
@@ -261,6 +305,8 @@ def eval_policy(
                                 state_tactiles = torch.concatenate([
                                     torch.from_numpy(tactiles.pop(key)) for key in sorted(tactiles.keys())
                                 ], axis=-1)
+                observation = keep_single_camera_observation(observation)
+                observation = apply_rename_map_to_observation(observation, cfg.rename_map)
                 state_tensor = torch.from_numpy(
                     np.concatenate((current_arm_q, left_ee_state, right_ee_state), axis=0)
                 ).float()
@@ -304,7 +350,7 @@ def eval_policy(
                 # Maintain frequency
                 time.sleep(max(0, (1.0 / cfg.frequency) - (time.perf_counter() - loop_start_time)))
     except Exception as e:
-        logger_mp.info(f"An error occurred: {e}")
+        print(f"An error occurred: {e}")
     finally:
         if image_info:
             cleanup_resources(image_info)
@@ -324,13 +370,21 @@ def eval_main(cfg: EvalRealConfig):
 
     dataset = LeRobotDataset(repo_id=cfg.repo_id)
 
-    policy = make_policy(cfg=cfg.policy, ds_meta=dataset.meta)
+    policy = make_policy(cfg=cfg.policy, ds_meta=dataset.meta, rename_map=cfg.rename_map)
     policy.eval()
+
+    # When loading pretrained processors, keep their saved normalization stats.
+    # Overriding with dataset stats can cause action-dimension mismatch (e.g., 6 vs 26).
+    dataset_stats = rename_stats(dataset.meta.stats, cfg.rename_map)
+
+    action_feature = policy.config.output_features.get("action")
+    if action_feature is not None:
+        dataset_stats = align_action_stats_to_policy(dataset_stats, int(action_feature.shape[0]))
 
     preprocessor, postprocessor = make_pre_post_processors(
         policy_cfg=cfg.policy,
-        pretrained_path=cfg.policy.pretrained_path,
-        dataset_stats=rename_stats(dataset.meta.stats, cfg.rename_map),
+        pretrained_path=None,
+        dataset_stats=dataset_stats,
         preprocessor_overrides={
             "device_processor": {"device": cfg.policy.device},
             "rename_observations_processor": {"rename_map": cfg.rename_map},
