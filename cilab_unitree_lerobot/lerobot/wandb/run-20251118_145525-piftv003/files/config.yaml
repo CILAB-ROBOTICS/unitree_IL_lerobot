@@ -1,0 +1,102 @@
+_wandb:
+    value:
+        cli_version: 0.23.0
+        e:
+            sba44itgiy7c2pg2gbk1ijlxpjgfofmt:
+                args:
+                    - --train_dataset_id
+                    - eunjuri/towel_strong_train_full
+                    - eunjuri/towel_weak_train_full
+                    - --test_dataset_id
+                    - eunjuri/towel_strong_test_full
+                    - eunjuri/towel_weak_test_full
+                    - --n_epochs
+                    - "100"
+                    - --wandb_enable=true
+                    - --wandb_name=towel_strong_weak
+                codePath: lerobot/scripts/pretrain.py
+                codePathLocal: lerobot/scripts/pretrain.py
+                cpu_count: 64
+                cpu_count_logical: 128
+                cudaVersion: "12.8"
+                disk:
+                    /:
+                        total: "1967317549056"
+                        used: "1666179895296"
+                email: ejkwon43@gm.gist.ac.kr
+                executable: /usr/bin/python
+                git:
+                    remote: https://github.com/CILAB-ROBOTICS/unitree_IL_lerobot.git
+                gpu: NVIDIA RTX A5000
+                gpu_count: 2
+                gpu_nvidia:
+                    - architecture: Ampere
+                      cudaCores: 8192
+                      memoryTotal: "25757220864"
+                      name: NVIDIA RTX A5000
+                      uuid: GPU-0c394c29-8754-ccb9-17e1-01bdbeb68751
+                    - architecture: Ampere
+                      cudaCores: 8192
+                      memoryTotal: "25757220864"
+                      name: NVIDIA RTX A5000
+                      uuid: GPU-0e3309ce-2c1f-3603-9f6f-5282b4495185
+                host: e76ef2b817c4
+                memory:
+                    total: "540615860224"
+                os: Linux-6.8.0-85-generic-x86_64-with-glibc2.35
+                program: /workspace/cilab_unitree_lerobot/lerobot/lerobot/scripts/pretrain.py
+                python: CPython 3.10.12
+                root: /workspace/cilab_unitree_lerobot/lerobot
+                startedAt: "2025-11-18T14:55:25.170025Z"
+                writerId: sba44itgiy7c2pg2gbk1ijlxpjgfofmt
+        m: []
+        python_version: 3.10.12
+        t:
+            "1":
+                - 1
+                - 5
+                - 41
+                - 49
+                - 51
+                - 53
+            "2":
+                - 1
+                - 5
+                - 41
+                - 49
+                - 51
+                - 53
+            "3":
+                - 2
+                - 13
+                - 16
+            "4": 3.10.12
+            "5": 0.23.0
+            "12": 0.23.0
+            "13": linux-x86_64
+batch_size:
+    value: 16
+clip_dim:
+    value: 256
+device:
+    value: cuda
+features_per_group:
+    value: 16
+n_epochs:
+    value: 100
+plot_freq:
+    value: 1
+projection_lr:
+    value: 0.0001
+resnet_lr:
+    value: 1e-05
+save_freq:
+    value: 100
+test_datasets:
+    value:
+        - eunjuri/towel_strong_test_full
+        - eunjuri/towel_weak_test_full
+train_datasets:
+    value:
+        - eunjuri/towel_strong_train_full
+        - eunjuri/towel_weak_train_full
